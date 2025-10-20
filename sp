@@ -13,6 +13,12 @@ HISTFILE=~/.temp_history
 HISTSIZE=1000  # Set the maximum number of commands to remember
 HISTFILESIZE=2000  # Set the maximum size of the history file
 
+function events_info () {
+    echo "Number of records: $(journalctl | wc -l)"
+    echo "Oldest record's timestamp: $(journalctl | head -n 1 | cut -d' ' -f1-3)"
+    echo "Newest record's timestamp: $(journalctl | tail -n 1 | cut -d' ' -f1-3)"
+    echo
+}
 
 function events_newest () {
     count=$(echo "$cmd" | cut -d' ' -f 3)
@@ -46,8 +52,8 @@ function sp_status () {
    echo "IPv4 configuration:"
    echo "  IP Address:         $(ifconfig | grep "inet " | grep -v "127.0.0.1" | tr -s ' ' | cut -d' ' -f3)"
    echo "  Netmask:            $(ifconfig | grep "inet " | grep -v "127.0.0.1" | tr -s ' ' | cut -d' ' -f5)"
-   echo "  Gateway:            $(ifconfig | grep "inet " | grep -v "127.0.0.1" | tr -s ' ' | cut -d' ' -f7)"
-
+   echo "  Gateway:            $(ip route | grep default | cut -d' ' -f 3)"
+   
 }
 
 function system_power_cycle () {
@@ -139,6 +145,7 @@ while true; do
     ""     ) ;;
     "date" ) date ;;
     "events all" ) journalctl ;;
+    "events info" ) events_info ;;
     "events newest"* ) events_newest ;;
     "events oldest"* ) events_oldest ;;
     "events search"* ) events_search ;;
@@ -249,7 +256,7 @@ while true; do
         virsh inject-nmi "$domain"
         ;;
     "system power cycle" ) system_power_cycle ;;
-    "system power halt" )
+    "system power halt" ) 
         virsh shutdown "$domain"
         ;;
     "system power off" ) system_power_off ;;
@@ -274,3 +281,4 @@ while true; do
   esac
 
 done
+
