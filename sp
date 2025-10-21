@@ -7,6 +7,7 @@ domain=${diskfilename::${#diskfilename}-15}
 prompt="SP $domain"
 
 priv_mode="admin"
+system_console_log=~/.spcli_system_console.log
 
 set -o history  # Enable history
 HISTFILE=~/.temp_history
@@ -47,13 +48,37 @@ function events_search () {
     esac
 }
 
+function log_system_console () {
+
+  #trim noise from log
+  sed -i '/virsh console/d' $system_console_log
+  sed -i '/Connected to domain/d' $system_console_log
+  sed -i '/Escape character is/d' $system_console_log
+  sed -i '/stream had I\/O failure/d' $system_console_log
+
+  expect -c "set timeout -1; spawn virsh console $domain --force; expect eof" >> $system_console_log &
+
+}
+
+
 function sp_status () {
    echo "Firmware Version:     $(cat /etc/os-release | grep PRETTY_NAME | cut -d'"' -f2)"
    echo "IPv4 configuration:"
    echo "  IP Address:         $(ifconfig | grep "inet " | grep -v "127.0.0.1" | tr -s ' ' | cut -d' ' -f3)"
    echo "  Netmask:            $(ifconfig | grep "inet " | grep -v "127.0.0.1" | tr -s ' ' | cut -d' ' -f5)"
    echo "  Gateway:            $(ip route | grep default | cut -d' ' -f 3)"
-   
+
+}
+
+function system_core () {
+  while true; do
+    read -r -p "This will cause a dirty shutdown of your appliance. Continue? [y/n] " choice
+    case "$choice" in
+      y|Y ) echo; virsh inject-nmi "$domain";;
+      n|N ) echo; break;;
+        * ) echo "Invalid response: [ $choice ].";;
+    esac
+  done
 }
 
 function system_power_cycle () {
@@ -71,6 +96,7 @@ function system_power_cycle () {
     if [ "$state" == "running" ]; then
       virsh destroy "$domain" --graceful > /dev/null
       virsh start "$domain" > /dev/null
+      log_system_console
       echo
     fi
   fi
@@ -103,6 +129,7 @@ function system_power_on () {
   state=$(virsh domstate $domain)
   if [ "$state" != "running" ]; then
     virsh start $domain > /dev/null
+    log_system_console
   fi
 }
 
@@ -133,6 +160,9 @@ function system_reset_current () {
 }
 
 # main loop
+# start logging the system console
+state=$(virsh domstate $domain)
+if [ "$state" == "running" ]; then log_system_console;fi
 
 while true; do
   history -c
@@ -203,6 +233,8 @@ while true; do
         echo "system console - connect to the system console" ;;
     "help system core" )
         echo "system core - dump the system core and reset" ;;
+    "help system log" )
+        echo "system log - print system console logs";;
     "help system power" | "system power" )
         echo "system power cycle - power the system off, then on"
         echo "system power halt - halt the system"
@@ -250,13 +282,22 @@ while true; do
     "sp status" ) sp_status ;;
     "sp uptime" ) uptime ;;
     "system console" )
-        virsh -e ^D console "$domain" --force
+        state=$(virsh domstate $domain)
+        if [ "$state" == "running" ]; then
+          virsh -e ^D console "$domain" --force | tee -a $system_console_log
+          log_system_console
+        fi
         ;;
-    "system core" )
-        virsh inject-nmi "$domain"
+    "system core" ) system_core ;;
+    "system log" )
+        cat $system_console_log | \
+          sed '/virsh console/d' | \
+          sed '/Connected to domain/d' | \
+          sed '/Escape character is/d' | \
+          sed '/stream had I\/O failure/d'
         ;;
     "system power cycle" ) system_power_cycle ;;
-    "system power halt" ) 
+    "system power halt" )
         virsh shutdown "$domain"
         ;;
     "system power off" ) system_power_off ;;
@@ -270,6 +311,7 @@ while true; do
     "system"* | "help system" )
         echo "system console - connect to the system console"
         echo "system core - dump the system core and reset"
+        echo "system log - print system console log"
         echo "system power - commands controlling system power"
         echo "system reset - reset the system using the selected firmware"
         echo "system sensors - print system sensors"
@@ -281,4 +323,3 @@ while true; do
   esac
 
 done
-
