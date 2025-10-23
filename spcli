@@ -61,7 +61,7 @@ function events_newest () {
     case $count in
         "" ) usage ;;
         0 | *[!0-9]*) echo "Argument is not an integer > 0 and should be"; usage ;;
-        *) journalctl | tail -n $count
+        *) journalctl -n $count --no-pager
     esac
 }
 
@@ -71,7 +71,7 @@ function events_oldest () {
     case $count in
         "" ) usage ;;
         0 | *[!0-9]*) echo "Argument is not an integer > 0 and should be"; usage ;;
-        *) journalctl | head -n $count
+        *) journalctl | head -n $count 
     esac
 }
 
@@ -80,14 +80,14 @@ function events_search () {
 
     case $searchstr in
         "" ) usage ;;
-        *) journalctl | grep -F "$searchstr"
+        *) journalctl -g "$searchstr"
     esac
 }
 
 function log_system_console () {
 
   #trim noise from log
-  sed -i '/virsh console/d' $system_console_log 
+  sed -i '/spawn virsh/d' $system_console_log 
   sed -i '/Connected to domain/d' $system_console_log 
   sed -i '/Escape character is/d' $system_console_log 
   sed -i '/stream had I\/O failure/d' $system_console_log 
@@ -122,6 +122,50 @@ function system_core () {
     virsh --connect qemu:///system inject-nmi "$domain"
   fi
   echo
+}
+
+function system_log () {
+  case $cmd in 
+    "" ) 
+      cat $system_console_log | \
+        sed '/spawn virsh/d' | \
+        sed '/Connected to domain/d' | \
+        sed '/Escape character is/d' | \
+        sed '/stream had I\/O failure/d'
+      ;;
+    *"-a"* )
+      echo "==================== Log #1 start"
+      awk '/Loading kernel.../{f=1;s=""}f{s=s$0"\n"}END{printf "%s",s}' $system_console_log | awk '/---<<BOOT>>---/{exit} {print}' |
+        sed '/spawn virsh/d' | \
+        sed '/Connected to domain/d' | \
+        sed '/Escape character is/d' | \
+        sed '/stream had I\/O failure/d' 
+      echo "==================== Log #1 end"
+      echo
+      echo "==================== Log #2 start"
+      awk '/---<<BOOT>>---/{f=1;s=""}f{s=s$0"\n"}END{printf "%s",s}' $system_console_log |
+        sed '/spawn virsh/d' | \
+        sed '/Connected to domain/d' | \
+        sed '/Escape character is/d' | \
+        sed '/stream had I\/O failure/d' 
+      echo "==================== Log #2 end"
+      ;;
+    *"-l 1"* ) 
+      awk '/Loading kernel.../{f=1;s=""}f{s=s$0"\n"}END{printf "%s",s}' $system_console_log | awk '/---<<BOOT>>---/{exit} {print}' |
+        sed '/spawn virsh/d' | \
+        sed '/Connected to domain/d' | \
+        sed '/Escape character is/d' | \
+        sed '/stream had I\/O failure/d' 
+      ;;
+    *"-l 2"* )
+      awk '/---<<BOOT>>---/{f=1;s=""}f{s=s$0"\n"}END{printf "%s",s}' $system_console_log |
+        sed '/spawn virsh/d' | \
+        sed '/Connected to domain/d' | \
+        sed '/Escape character is/d' | \
+        sed '/stream had I\/O failure/d' 
+      ;; 
+    * ) usage ;;
+  esac
 }
 
 function system_power_cycle () {
@@ -181,6 +225,7 @@ function usage () {
     "events oldest"* ) echo "usage: events oldest <number>" ;;
     "events search"* ) echo "usage: events search <string>" ;;
     "help"*          ) echo "usage: help [<command>]" ;;
+    "system log"*    ) echo "usage: system log [-a] [-l <log_number>]" ;;
   esac
 }
 
@@ -188,6 +233,10 @@ function help (){
   case $cmd in
     *"date"* )
         echo "date - print date and time" ;;
+    *"events all"* ) 
+        echo "events all - print all system events" ;;
+    *"events info"* ) 
+        echo "events info - print system event log information" ;;
     *"events newest"* )
         echo "events newest - print newest system events" ;;
     *"events oldest"* )
@@ -310,6 +359,7 @@ function run_command () {
     "sp reboot" ) sp_reboot ;;
     "sp status" ) sp_status ;;
     "sp uptime" ) uptime ;;
+    "sp" | "sp "* ) help ;;
     "system console" )
         if is_power_on; then
           virsh --connect qemu:///system -e ^D console "$domain" --force | tee -a $system_console_log
@@ -317,13 +367,11 @@ function run_command () {
         fi
         ;;
     "system core" ) system_core ;;
-    "system log" )
-        cat $system_console_log | \
-          sed '/virsh console/d' | \
-          sed '/Connected to domain/d' | \
-          sed '/Escape character is/d' | \
-          sed '/stream had I\/O failure/d'
-        ;;
+    "system log -l 1-" )
+        awk '/Loading kernel.../{f=1;s=""}f{s=s$0"\n"}END{printf "%s",s}' $system_console_log | awk '/---<<BOOT>>---/{exit} {print}' ;;
+    "system log -l 2-" )
+        awk '/---<<BOOT>>---/{f=1;s=""}f{s=s$0"\n"}END{printf "%s",s}' $system_console_log ;;
+    "system log" | "system log "* ) system_log ;; # | more -d -n 10 
     "system power cycle" ) system_power_cycle ;;
     "system power halt" ) virsh --connect qemu:///system shutdown "$domain";;
     "system power off" ) system_power_off ;;
