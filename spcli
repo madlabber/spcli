@@ -125,47 +125,61 @@ function system_core () {
 }
 
 function system_log () {
-  case $cmd in 
-    "" ) 
-      cat $system_console_log | \
+  page_size=$( echo $cmd | awk -F'-p ' '{print $2}' | awk -F' -' '{print $1}')
+  echo "=p $page_size"
+  case $page_size in
+    "" )
+      system_log_filtered | 
         sed '/spawn virsh/d' | \
         sed '/Connected to domain/d' | \
         sed '/Escape character is/d' | \
         sed '/stream had I\/O failure/d'
       ;;
-    *"-a"* )
-      echo "==================== Log #1 start"
-      awk '/Loading kernel.../{f=1;s=""}f{s=s$0"\n"}END{printf "%s",s}' $system_console_log | awk '/---<<BOOT>>---/{exit} {print}' |
+    *[0-9]*) 
+      system_log_filtered | 
         sed '/spawn virsh/d' | \
         sed '/Connected to domain/d' | \
         sed '/Escape character is/d' | \
-        sed '/stream had I\/O failure/d' 
-      echo "==================== Log #1 end"
-      echo
-      echo "==================== Log #2 start"
-      awk '/---<<BOOT>>---/{f=1;s=""}f{s=s$0"\n"}END{printf "%s",s}' $system_console_log |
-        sed '/spawn virsh/d' | \
-        sed '/Connected to domain/d' | \
-        sed '/Escape character is/d' | \
-        sed '/stream had I\/O failure/d' 
-      echo "==================== Log #2 end"
+        sed '/stream had I\/O failure/d' | \
+        more -d -n $page_size
       ;;
-    *"-l 1"* ) 
-      awk '/Loading kernel.../{f=1;s=""}f{s=s$0"\n"}END{printf "%s",s}' $system_console_log | awk '/---<<BOOT>>---/{exit} {print}' |
-        sed '/spawn virsh/d' | \
-        sed '/Connected to domain/d' | \
-        sed '/Escape character is/d' | \
-        sed '/stream had I\/O failure/d' 
-      ;;
-    *"-l 2"* )
-      awk '/---<<BOOT>>---/{f=1;s=""}f{s=s$0"\n"}END{printf "%s",s}' $system_console_log |
-        sed '/spawn virsh/d' | \
-        sed '/Connected to domain/d' | \
-        sed '/Escape character is/d' | \
-        sed '/stream had I\/O failure/d' 
-      ;; 
     * ) usage ;;
   esac
+}
+
+function system_log_filtered () {
+  case $cmd in 
+    "system log" ) cat $system_console_log ;;
+    *"-a"*   ) system_log_all ;;
+    *"-l 1"* ) system_log_1 ;;
+    *"-l 2"* ) system_log_2 ;; 
+    * ) usage ;;
+  esac
+}
+
+# print both log 1 and log 2
+function system_log_all () {
+  system_log_1
+  echo
+  system_log_2
+}
+
+# system log 1 should contain the loader stage of the most recent boot
+function system_log_1 () {
+      echo "==================== Log #1 start"
+      awk '/Loading kernel.../{f=1;s=""}f{s=s$0"\n"}END{printf "%s",s}' $system_console_log | awk '/---<<BOOT>>---/{exit} {print}' |
+      echo "==================== Log #1 end"
+}
+
+# system log 2 should contain everything after the loader stage of the most recent boot
+function system_log_2 () {
+  echo "==================== Log #2 start"
+  if [ "$(grep '\-\-\-<<BOOT>>---' $system_console_log)" == "" ];then 
+    cat $system_console_log;
+  else
+    awk '/---<<BOOT>>---/{f=1;s=""}f{s=s$0"\n"}END{printf "%s",s}' $system_console_log
+  fi 
+  echo "==================== Log #2 end"
 }
 
 function system_power_cycle () {
@@ -225,7 +239,7 @@ function usage () {
     "events oldest"* ) echo "usage: events oldest <number>" ;;
     "events search"* ) echo "usage: events search <string>" ;;
     "help"*          ) echo "usage: help [<command>]" ;;
-    "system log"*    ) echo "usage: system log [-a] [-l <log_number>]" ;;
+    "system log"*    ) echo "usage: system log [-a] [-p <page_size>] [-l <log_number>]" ;;
   esac
 }
 
