@@ -125,8 +125,8 @@ function system_core () {
 }
 
 function system_log () {
-  page_size=$( echo $cmd | awk -F'-p ' '{print $2}' | awk -F' -' '{print $1}')
-  
+  page_size=$( echo $cmd | awk -F'-p ' '{print $2}' | awk -F' ' '{print $1}')
+
   case $page_size in
     "" )
       system_log_filtered | 
@@ -268,16 +268,6 @@ function help (){
         echo "exit - exit from the SP command line interface" ;;
     "help help"   )
         echo "help - print command help" ;;
-    *"help"* | "?"  )
-        echo "date - print date and time"
-        echo "exit - exit from the SP command line interface"
-        echo "events - print system events and event information"
-        echo "help - print command help"
-        echo "priv - show and set user mode"
-        echo "sp - commands to control the SP"
-        echo "system - commands to control the system"
-        echo "version - print Service Processor version"
-        echo ;;
     *"priv set"* )
         echo "priv set admin - enter into admin user mode"
         echo "priv set -q admin - enter into admin user mode"
@@ -329,6 +319,16 @@ function help (){
         echo ;;
     *"version"* )
         echo "version - print Service Processor version" ;;
+    *"help"* | "?"  )
+        echo "date - print date and time"
+        echo "exit - exit from the SP command line interface"
+        echo "events - print system events and event information"
+        echo "help - print command help"
+        echo "priv - show and set user mode"
+        echo "sp - commands to control the SP"
+        echo "system - commands to control the system"
+        echo "version - print Service Processor version"
+        echo ;;
     * ) usage ;;
   esac
 }
