@@ -126,7 +126,7 @@ function system_core () {
 
 function system_log () {
   page_size=$( echo $cmd | awk -F'-p ' '{print $2}' | awk -F' -' '{print $1}')
-  echo "=p $page_size"
+  
   case $page_size in
     "" )
       system_log_filtered | 
