@@ -19,6 +19,10 @@ function init () {
 
   # start logging the system console
   if is_power_on; then log_system_console;fi
+
+  # cache location for env file
+  env=/opt/spcli/log/env
+
 }
 
 function confirm_dirty_shutdown () {
@@ -41,6 +45,74 @@ function confirm_sp_reboot () {
         * ) echo "Invalid response: [ $choice ]." ;;
     esac
   done
+}
+
+function extractenv () {
+  offset="$(fdisk -l $systemdisk | grep FAT32 | tr -s ' ' | cut -d' ' -f2)s" 2>/dev/null
+  if [ "$offset" != "" ];then  
+    mcopy -n -i $systemdisk@@$offset ::env/env $env
+  fi
+}
+
+function injectenv () {
+  offset="$(fdisk -l $systemdisk | grep FAT32 | tr -s ' ' | cut -d' ' -f2)s"
+  mcopy -o -i $systemdisk@@$offset $env ::env/env 
+}
+
+function printenv () {
+  extractenv
+  if [ "$1" == "" ];then
+    cat $env | grep setenv | sort | sed 's^setenv ^^' | sed 's^ ^=^' | sed 's^"^^g' 
+  else 
+    cat $env | grep setenv | sort | sed 's^setenv ^^' | sed 's^ ^=^' | sed 's^"^^g' | grep "$1="
+  fi 
+}
+
+function getenv () {
+  extractenv
+  if [ "$1" != "" ];then
+    cat $env | grep setenv | sort | sed 's^setenv ^^' | sed 's^ ^=^' | sed 's^"^^g' | grep "$1=" | cut -d= -f2
+  fi 
+}
+
+function setenv () {
+  if is_power_on; then
+    echo "error: system power is on"
+  else
+    key=$(echo "$1=$2" | cut -d= -f1)
+    val=$(echo "$1=$2" | cut -d= -f2)
+    
+    if  [ "$(getenv $key)" == "" ];then 
+      sed -i "1asetenv $key \"$val\"" $env
+    else
+      sed -i "s~^\(setenv $key \).*~\1\"$val\"~" $env
+    fi
+    
+    # remove checksum
+    sed -i -e '/^[0-9]/d' $env
+
+    injectenv
+    #echo $(printenv $key)
+  fi
+}
+
+function unsetenv () {
+  if is_power_on; then
+    echo "error: system power is on"
+  else
+    #get key
+    key=$(echo "$1=" | cut -d= -f1)
+
+    # remove key
+    if [ "$key" != "" ];then
+      sed -i "s/^\(setenv $key \).*//" $env
+    fi 
+
+    # remove checksum
+    sed -i -e '/^[0-9]/d' $env
+
+    injectenv
+  fi
 }
 
 function is_power_on () {
@@ -94,6 +166,7 @@ function log_system_console () {
 
   # use expect so we can background this process
   expect -c "set timeout -1; spawn virsh --connect qemu:///system console $domain --force; expect eof" >> $system_console_log &
+  disown
 
 }
 
@@ -102,7 +175,7 @@ function log_system_console () {
 function sp_reboot () {
   if confirm_sp_reboot; then 
     echo
-    ./$(basename $0) && exit
+    spcli && exit
   else 
     echo
   fi
@@ -117,10 +190,71 @@ function sp_status () {
    
 }
 
+function system_console () {
+  if is_power_on; then
+    virsh --connect qemu:///system -e ^D console "$domain" --force | tee -a $system_console_log
+    log_system_console
+  fi
+}
+
 function system_core () {
   if confirm_dirty_shutdown; then 
     virsh --connect qemu:///system inject-nmi "$domain"
   fi
+  echo
+}
+
+function system_fru_list () {
+  echo
+  echo "  FRU ID      Name"
+  echo "=============================================="
+  echo "    0         Controller"
+  echo "    1         Chassis"
+  echo 
+}
+
+function system_fru_show () {
+  fru_id=$(echo "$cmd" | cut -d' ' -f 4)
+  case $fru_id in 
+    0 )       system_fru_show_0 ;;
+    1 )       system_fru_show_1 ;;
+    *[0-9]* ) echo "Invalid fru id" ;;
+    * )       usage ;;
+  esac 
+
+}
+
+function system_fru_show_0 () {
+  echo
+  echo "'Controller' inventory data:"
+  echo
+  echo "*** Product Info Area ***"
+  echo "Mfg name            NetApp, Inc."
+  echo "Product Name        Select"
+  echo "System Model        $(getenv SYS_MODEL)"
+  echo "System Rev          $(getenv SYS_REV)"
+  echo "System Serial       $(getenv SYS_SERIAL_NUM)"
+  echo "System Id           $(getenv bootarg.nvram.sysid)"
+  echo
+  echo "*** Select Info Area ***"
+  echo "CPU Cores:          $(virsh --connect qemu:///system vcpucount $domain | grep current | grep config | tr -s ' ' | cut -d' ' -f3)" 
+  echo "Memory:            $(virsh --connect qemu:///system dominfo $domain | grep 'Max memory' | tr -s ' ' | cut -d':' -f2)"
+  echo "System Disks:"
+  echo "$(virsh --connect qemu:///system dumpxml $domain | grep 'source dev' | grep -v 'dev/disk/' | cut -d\' -f 2 | sed -e 's/^/                    /')"
+  echo "Data Disks:"
+  echo "$(virsh --connect qemu:///system dumpxml $domain | grep 'source dev' | grep 'dev/disk/' | cut -d\' -f 2 | sed -e 's/^/                    /')"
+  echo 
+
+}
+
+function system_fru_show_1 () {
+  echo 
+  echo
+  echo "'Chassis' inventory data:"
+  echo
+  dmidecode -t 3 -q
+  dmidecode -t 2 -q
+  dmidecode -t 1 -q
   echo
 }
 
@@ -167,7 +301,7 @@ function system_log_all () {
 # system log 1 should contain the loader stage of the most recent boot
 function system_log_1 () {
       echo "==================== Log #1 start"
-      awk '/Loading kernel.../{f=1;s=""}f{s=s$0"\n"}END{printf "%s",s}' $system_console_log | awk '/---<<BOOT>>---/{exit} {print}' |
+      awk '/Loading kernel.../{f=1;s=""}f{s=s$0"\n"}END{printf "%s",s}' $system_console_log | awk '/---<<BOOT>>---/{exit} {print}'
       echo "==================== Log #1 end"
 }
 
@@ -221,7 +355,7 @@ function system_power_status () {
   fi
 }
 
-function system_reset_current () {
+function system_reset () {
   if confirm_dirty_shutdown; then 
       virsh --connect qemu:///system destroy "$domain" --graceful > /dev/null
       virsh --connect qemu:///system start "$domain" > /dev/null
@@ -230,16 +364,63 @@ function system_reset_current () {
   fi
 }
 
+function system_reset_current () {
+  booted_from="$(getenv BOOTED_FROM)"
+  if [ "$booted_from" == "BACKUP" ];then 
+    system_reset_backup
+  else
+    system_reset_primary 
+  fi 
+}
+
+function system_reset_backup () {
+  if confirm_dirty_shutdown; then
+    virsh --connect qemu:///system destroy "$domain" --graceful > /dev/null
+    virsh --connect qemu:///system start "$domain" > /dev/null
+    echo
+    sleep 1
+    expect -c 'set timeout 1; \
+               spawn virsh --connect qemu:///system console '$domain' --force; \
+               expect "Booting in"; \
+               send "boot_backup\r"; \
+               send "boot_backup\r"; \
+               sleep 2; \
+               exit' >> $system_console_log
+  fi
+  log_system_console
+}
+
+function system_reset_primary () {
+  if confirm_dirty_shutdown; then
+    virsh --connect qemu:///system destroy "$domain" --graceful > /dev/null
+    virsh --connect qemu:///system start "$domain" > /dev/null
+    echo
+    sleep 1
+    expect -c 'set timeout 1; \
+               spawn virsh --connect qemu:///system console '$domain' --force; \
+               expect "Booting in"; \
+               send "boot_primary\r"; \
+               send "boot_primary\r"; \
+               sleep 2; \
+               exit' >> $system_console_log
+  fi
+  log_system_console
+}
+
 function usage () {
   case $cmd in 
-    "date"*          ) echo "usage: date";;
-    "events all"*    ) echo "usage: events all";;
-    "events info"*   ) echo "usage: events info";;
-    "events newest"* ) echo "usage: events newest <number>" ;;
-    "events oldest"* ) echo "usage: events oldest <number>" ;;
-    "events search"* ) echo "usage: events search <string>" ;;
-    "help"*          ) echo "usage: help [<command>]" ;;
-    "system log"*    ) echo "usage: system log [-a] [-p <page_size>] [-l <log_number>]" ;;
+    "date"*            ) echo "usage: date";;
+    "events all"*      ) echo "usage: events all";;
+    "events info"*     ) echo "usage: events info";;
+    "events newest"*   ) echo "usage: events newest <number>" ;;
+    "events oldest"*   ) echo "usage: events oldest <number>" ;;
+    "events search"*   ) echo "usage: events search <string>" ;;
+    "help"*            ) echo "usage: help [<command>]" ;;
+    "system fru list"* ) echo "usage: system fru list" ;;
+    "system fru show"* ) echo "usage: system fru show <FRU-ID>" ;;
+    "system setenv"*   ) echo "usage: system setenv <key>=<value>" ;;
+    "system unsetenv"* ) echo "usage: system unsetenv <key>" ;;
+    "system log"*      ) echo "usage: system log [-a] [-p <page_size>] [-l <log_number>]" ;;
   esac
 }
 
@@ -293,12 +474,33 @@ function help (){
         echo "sp status - print SP status information"
         echo "sp uptime - display service processor uptime"
         echo ;;
+    *"system acp show"* )
+        echo "system acp show - display ACP info status" ;;
+    *"system acp sensors show"* )
+        echo "system acp sensors show - display expander sensors status" ;;
+    *"system acp"* )
+        echo "system acp show - display ACP info status"
+        echo "system acp sensors show - display expander sensors status" 
+        echo ;;
+    *"system battery"* )
+        echo "system battery show - display battery info status"
+        echo ;;
     *"system console"* )
         echo "system console - connect to the system console" ;;
     *"system core"* )
         echo "system core - dump the system core and reset" ;;
+    *"system fru"* )
+        echo "system fru show - display fru id inventory data"
+        echo "system fru list - list fru id" 
+        echo ;;
     *"system log"* )
         echo "system log - print system console logs";;
+    *"system printenv"* )
+        echo "system printenv - print system environment variables" ;;
+    *"system setenv"* )
+        echo "system setenv - print system environment variables" ;;
+    *"system unsetenv"* )
+        echo "system setenv - print system environment variables" ;;
     *"system power"* )
         echo "system power cycle - power the system off, then on"
         echo "system power halt - halt the system"
@@ -307,15 +509,34 @@ function help (){
         echo "system power status - print system power status"
         echo ;;
     *"system reset"* )
+        echo "system reset backup - reset the system using the backup firmware"
         echo "system reset current - reset the system using the current firmware"
+        echo "system reset primary - reset the system using the primary firmware"
+        echo ;;
+    *"system forensics"* )
+        echo "system forensics show - show the system forensics configuration settins"
+        echo "system forensics log - display or clear system forensics logs"
+        echo ;;
+    *"system watchdog"* )
+        echo "system watchdog status - Display the system watchdog status"
         echo ;;
     *"system"* )
+        echo "system acp - acp related commands"
+        echo "system battery - battery related commands"
         echo "system console - connect to the system console"
         echo "system core - dump the system core and reset"
         echo "system log - print system console log"
         echo "system power - commands controlling system power"
         echo "system reset - reset the system using the selected firmware"
         echo "system sensors - print system sensors"
+        echo "system fru - fru related commands"
+        echo "system forensics - configure watchdog forensics collection settings"
+        echo "system watchdog - system watchdog commands"
+        # diag level commands
+        if [ "$priv_mode" == "diag" ];then 
+        echo "system printenv - print system environment variables"
+        echo "system unsetenv - unset system environment variables"
+        echo "system setenv - set system environment variables";fi 
         echo ;;
     *"version"* )
         echo "version - print Service Processor version" ;;
@@ -331,6 +552,14 @@ function help (){
         echo ;;
     * ) usage ;;
   esac
+}
+
+function enforce_priv_mode () {
+  case $cmd in
+    *"system printenv"* )  if [ "$priv_mode" != "diag" ]; then cmd="unauthorized";fi ;;
+    *"system setenv"* )  if [ "$priv_mode" != "diag" ]; then cmd="unathorized";fi ;;
+    *"system unsetenv"* ) if [ "$priv_mode" != "diag" ]; then cmd="unauthorized";fi ;;
+  esac 
 }
 
 function run_command () {
@@ -374,26 +603,33 @@ function run_command () {
     "sp status" ) sp_status ;;
     "sp uptime" ) uptime ;;
     "sp" | "sp "* ) help ;;
-    "system console" )
-        if is_power_on; then
-          virsh --connect qemu:///system -e ^D console "$domain" --force | tee -a $system_console_log
-          log_system_console
-        fi
-        ;;
+    "system acp show" ) echo "ACP is not available" ;;
+    "system acp sensors show" ) echo "ACP is not available" ;;
+    "system battery show" ) upower -i `upower -e | grep 'BAT'` ;;
+    "system console" ) system_console ;;
     "system core" ) system_core ;;
-    "system log -l 1-" )
-        awk '/Loading kernel.../{f=1;s=""}f{s=s$0"\n"}END{printf "%s",s}' $system_console_log | awk '/---<<BOOT>>---/{exit} {print}' ;;
-    "system log -l 2-" )
-        awk '/---<<BOOT>>---/{f=1;s=""}f{s=s$0"\n"}END{printf "%s",s}' $system_console_log ;;
+    "system fru list" ) system_fru_list ;;
+    "system fru list "* ) usage ;;
+    "system fru show"* ) system_fru_show ;;
     "system log" | "system log "* ) system_log ;; # | more -d -n 10 
     "system power cycle" ) system_power_cycle ;;
     "system power halt" ) virsh --connect qemu:///system shutdown "$domain";;
     "system power off" ) system_power_off ;;
     "system power on" ) system_power_on ;;
     "system power status" ) system_power_status ;;
-    "system reset" ) system_reset_current ;;
+    "system printenv" | "system printenv "* ) printenv "$(echo $cmd | cut -d' ' -f3-)" ;;
+    "system getenv" | "system getenv "* ) getenv "$(echo $cmd | cut -d' ' -f3-)" ;;
+    "system setenv "* ) setenv "$(echo $cmd | cut -d' ' -f3)" "$(echo $cmd | cut -d' ' -f4)"; echo $cmd | cut -d' ' -f4 ;;
+    "system setenv" ) usage ;;
+    "system unsetenv "* ) unsetenv "$(echo $cmd | cut -d' ' -f3)" ;;
+    "system unsetenv" ) usage ;;
+    "system reset" ) system_reset ;;
+    "system reset backup" ) system_reset_backup ;;
     "system reset current" ) system_reset_current ;;
+    "system reset primary" ) system_reset_primary ;;
     "system sensors" ) sensors ;;
+    "system forensics show" ) echo "Forensics enabled: false"; echo;;
+    "system watchdog status" ) virsh --connect qemu:///system dumpxml "$domain" | grep watchdog ;;
     "system"* ) help ;;
     "version" ) echo "SP CLI for ONTAP Select version $spcli_version" ;;
     * ) echo "command not found. Type '?' for a list of available commands."
@@ -427,6 +663,7 @@ function main () {
     read -ep "$prompt " cmd
     if [ "$cmd" != "" ] && [ "$cmd" != "$(tail $spcli_history -n 1)" ];then echo "$cmd" >> $spcli_history;fi
     
+    enforce_priv_mode
     run_command
 
   done
