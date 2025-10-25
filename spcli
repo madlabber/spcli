@@ -1,6 +1,6 @@
 #!/bin/bash
 function init () {
-  spcli_version="0.02"
+  spcli_version="0.03"
 
   priv_mode="admin"
   system_console_log=/opt/spcli/log/system_console
