@@ -3,7 +3,7 @@
 # files
 mkdir -p /opt/spcli/log
 cp spcli /opt/spcli/spcli 2>/dev/null
-rm /usr/sbin/spcli
+rm /usr/local/sbin/spcli
 ln -s /opt/spcli/spcli /usr/sbin/spcli 
 touch /opt/spcli/log/history
 touch /opt/spcli/log/system_console
