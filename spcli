@@ -15,7 +15,17 @@ function init () {
   # find the virsh domain of the storage controller
   systemdisk="$(find /dev | grep _DataONTAPv.raw | grep -v mapper | grep -v by-id)"
   diskfilename=$(basename "$systemdisk")
-  domain=${diskfilename::${#diskfilename}-15}
+  if [ ${#diskfilename} -gt 15 ];then
+    domain=${diskfilename::${#diskfilename}-15}
+  fi
+
+  if [ "$domain" == "" ];then 
+    echo "WARNING: No Controller Detected"
+    echo
+  fi 
+
+  # detect unconfigured host
+  if [ "$(which virsh)" == "" ];then host_setup;fi
 
   # start logging the system console
   if is_power_on; then log_system_console;fi
@@ -52,6 +62,17 @@ function extractenv () {
   if [ "$offset" != "" ];then  
     mcopy -n -i $systemdisk@@$offset ::env/env $env
   fi
+}
+
+function get_host_mgmt_network () {
+  #get the first interface with a valid ipv4 address
+  mgmt_port=$(ip -4 -o address | grep -v 192.168.122.1 | grep -v 127.0.0.1 |head -n 1|tr -s ' '|cut -d' ' -f2)
+  if [ "$(ifconfig $mgmt_port | grep UP)" != "" ]; then mgmt_port_status="Up"; else mgmt_port_status="Down";fi
+  mgmt_ip=$(ifconfig "$mgmt_port" | grep -v inet6 | grep inet | tr -s ' '| cut -d' ' -f3)
+  mgmt_netmask=$(ifconfig "$mgmt_port" | grep -v inet6 | grep inet | tr -s ' '| cut -d' ' -f5)  
+  mgmt_gateway=$(ip route | grep default | cut -d' ' -f 3)
+  mgmt_dns1=$(nmcli dev show | grep DNS | head -n 1 | tr -s ' ' | cut -d' ' -f2)
+
 }
 
 function injectenv () {
@@ -116,7 +137,7 @@ function unsetenv () {
 }
 
 function is_power_on () {
-  if [ "$(virsh --connect qemu:///system domstate $domain)" == "running" ]; then return 0; fi
+  if [ "$(virsh --connect qemu:///system domstate $domain 2>/dev/null)" == "running" ]; then return 0; fi
   return 1
 }
 
@@ -170,6 +191,563 @@ function log_system_console () {
 
 }
 
+function host_setup_all () {
+  echo 
+  host_setup_packages
+  host_setup_storage  
+  #host_setup_network_2
+  host_setup_network
+
+}
+
+# Ensure the script is run with root privileges
+function am_i_root (){
+  if [ "$EUID" -ne 0 ]; then
+    echo "This script must be run as root."
+    return 1
+  fi
+  return 0
+}
+
+# Menu driven OVS config
+ovs_menu() {
+    PS3='Please enter your choice: '
+    options=("Create Bridge" "Add Port to Bridge" "Create Bond" "Add Internal Port" "Add VLAN-tagged Port" "Show OVS Config" "Delete Bridge" "Exit")
+    select opt in "${options[@]}"; do
+        case $opt in
+            "Create Bridge")
+                read -p "Enter a name for the new bridge: " bridge_name
+                if [ -z "$bridge_name" ]; then
+                    echo "Bridge name cannot be empty."
+                else
+                    ovs-vsctl --may-exist add-br "$bridge_name"
+                    if [ $? -eq 0 ]; then
+                        echo "Bridge '$bridge_name' created successfully."
+                    else
+                        echo "Failed to create bridge '$bridge_name'."
+                    fi
+                fi
+                ;;
+            "Add Port to Bridge")
+                read -p "Enter the bridge name: " bridge_name
+                read -p "Enter the interface name to add: " interface_name
+                if [ -z "$bridge_name" ] || [ -z "$interface_name" ]; then
+                    echo "Bridge and interface names cannot be empty."
+                else
+                    ovs-vsctl br-exists "$bridge_name"
+                    if [ $? -eq 0 ]; then
+                        ovs-vsctl --may-exist add-port "$bridge_name" "$interface_name"
+                        if [ $? -eq 0 ]; then
+                            echo "Interface '$interface_name' added to bridge '$bridge_name'."
+                        else
+                            echo "Failed to add port '$interface_name'."
+                        fi
+                    else
+                        echo "Error: Bridge '$bridge_name' does not exist."
+                    fi
+                fi
+                ;;
+            "Create Bond")
+                read -p "Enter the bridge name to add the bond to: " bridge_name
+                read -p "Enter a name for the new bond (e.g., bond0): " bond_name
+                read -p "Enter the interfaces to bond (space-separated, e.g., eth1 eth2): " interfaces
+                if [ -z "$bridge_name" ] || [ -z "$bond_name" ] || [ -z "$interfaces" ]; then
+                    echo "Bridge name, bond name, and interfaces cannot be empty."
+                else
+                    ovs-vsctl br-exists "$bridge_name"
+                    if [ $? -eq 0 ]; then
+                        echo "Available bonding modes: active-backup, balance-slb, balance-tcp"
+                        read -p "Enter the desired bonding mode (default: active-backup): " bond_mode
+                        bond_mode=${bond_mode:-active-backup}
+
+                        read -p "Do you want to use LACP? (y/n, default: n): " use_lacp
+                        use_lacp=${use_lacp:-n}
+                        lacp_option=""
+                        if [[ "$use_lacp" == "y" ]]; then
+                            lacp_option="lacp=active"
+                            echo "Note: The remote switch must also be configured for LACP."
+                        fi
+
+                        ovs-vsctl add-bond "$bridge_name" "$bond_name" $interfaces bond_mode="$bond_mode" $lacp_option
+                        if [ $? -eq 0 ]; then
+                            echo "Bond '$bond_name' created on bridge '$bridge_name' with interfaces $interfaces."
+                        else
+                            echo "Failed to create bond '$bond_name'."
+                        fi
+                    else
+                        echo "Error: Bridge '$bridge_name' does not exist."
+                    fi
+                fi
+                ;;
+            "Add Internal Port")
+                read -p "Enter the bridge name: " bridge_name
+                read -p "Enter a name for the new internal port: " port_name
+                if [ -z "$bridge_name" ] || [ -z "$port_name" ]; then
+                    echo "Bridge and port names cannot be empty."
+                else
+                    ovs-vsctl br-exists "$bridge_name"
+                    if [ $? -eq 0 ]; then
+                        ovs-vsctl --may-exist add-port "$bridge_name" "$port_name" -- set Interface "$port_name" type=internal
+                        if [ $? -eq 0 ]; then
+                            echo "Internal port '$port_name' created and added to bridge '$bridge_name'."
+                        else
+                            echo "Failed to create internal port '$port_name'."
+                        fi
+                    else
+                        echo "Error: Bridge '$bridge_name' does not exist."
+                    fi
+                fi
+                ;;
+            "Add VLAN-tagged Port")
+                read -p "Enter the bridge name: " bridge_name
+                read -p "Enter the interface name to add: " interface_name
+                read -p "Enter the VLAN tag: " vlan_tag
+                if [ -z "$bridge_name" ] || [ -z "$interface_name" ] || [ -z "$vlan_tag" ]; then
+                    echo "Bridge name, interface name, and VLAN tag cannot be empty."
+                else
+                    ovs-vsctl br-exists "$bridge_name"
+                    if [ $? -eq 0 ]; then
+                        ovs-vsctl --may-exist add-port "$bridge_name" "$interface_name" tag="$vlan_tag"
+                        if [ $? -eq 0 ]; then
+                            echo "Interface '$interface_name' added to bridge '$bridge_name' with VLAN tag $vlan_tag."
+                        else
+                            echo "Failed to add VLAN-tagged port."
+                        fi
+                    else
+                        echo "Error: Bridge '$bridge_name' does not exist."
+                    fi
+                fi
+                ;;
+            "Show OVS Config")
+                echo "Current Open vSwitch configuration:"
+                ovs-vsctl show
+                ;;
+            "Delete Bridge")
+                echo "Available bridges:"
+                ovs-vsctl list-br
+                read -p "Enter the name of the bridge to delete: " bridge_name
+                if [ -z "$bridge_name" ]; then
+                    echo "Bridge name cannot be empty."
+                else
+                    ovs-vsctl br-exists "$bridge_name"
+                    if [ $? -eq 0 ]; then
+                        ovs-vsctl del-br "$bridge_name"
+                        if [ $? -eq 0 ]; then
+                            echo "Bridge '$bridge_name' deleted successfully."
+                        else
+                            echo "Failed to delete bridge '$bridge_name'."
+                        fi
+                    else
+                        echo "Error: Bridge '$bridge_name' does not exist."
+                    fi
+                fi
+                ;;
+            "Exit")
+                echo "Exiting script. Goodbye!"
+                break
+                ;;
+            *) echo "Invalid option. Please try again." ;;
+        esac
+        echo # Print a newline for spacing
+    done
+}
+
+# Function to convert netmask to CIDR prefix length
+netmask_to_cidr() {
+    local netmask="$1"
+    local cidr_prefix=0
+
+    # Split the netmask into octets
+    IFS='.' read -r -a octets <<< "$netmask"
+
+    # Iterate through each octet
+    for octet in "${octets[@]}"; do
+        # Convert the octet to its binary representation
+        local binary_octet=$(printf "%08d" "$(echo "obase=2; $octet" | bc)")
+
+        # Count the number of '1's in the binary octet
+        local ones_in_octet=$(echo "$binary_octet" | grep -o '1' | wc -l)
+        cidr_prefix=$((cidr_prefix + ones_in_octet))
+    done
+
+    echo "$cidr_prefix"
+}
+
+function get_physical_network_interfaces () {
+  interface_list=""
+  # Iterate through each network interface in /sys/class/net/
+  for interface in /sys/class/net/*; do
+      # Extract the interface name (e.g., eth0, enp0s3)
+      ifname=$(basename "$interface")
+
+      # Check if the 'device' subdirectory exists, which typically indicates a physical device
+      if [ -d "$interface/device" ]; then
+          # Exclude loopback interface (lo)
+          if [ "$ifname" != "lo" ]; then
+              # Further check for virtual functions (e.g., virtfn0) to exclude some virtual interfaces
+              # This is a heuristic and might need adjustment based on specific virtual setups
+              if ! ls "$interface/device/" | grep -q "virtfn"; then
+                  interface_list="$ifname $interface_list"
+              fi
+          fi
+      fi
+  done
+  echo "$interface_list"
+}
+
+function host_setup_network_shared (){
+  get_host_mgmt_network
+  eth_interface=$(ip link show | grep -E ': (eth|enp|eno|ens)' | head -n 1 | cut -d' ' -f2 | cut -d':' -f1)
+  bridge=$(nmcli d | grep ovs-bridge | cut -d' ' -f1)
+  if [ "$bridge" == "" ];then 
+    read -p "OVS Bridge: [br0] " bridge
+              bridge=${bridge:-"br0"}
+  else 
+    echo  "OVS Bridge: $bridge"
+  fi
+  echo    "OVS Port: $eth_interface"
+  read -p "IPv4 address: [$mgmt_ip] " ip_address
+            ip_address=${ip_address:-"$mgmt_ip"}
+  read -p "IPv4 netmask: [$mgmt_netmask] " ip_netmask
+            ip_netmask=${ip_netmask:-"$mgmt_netmask"}
+  read -p "IPv4 gateway: [$mgmt_gateway] " ip_gateway
+            ip_gateway=${ip_gateway:-"$mgmt_gateway"}
+  read -p "IPv4 DNS Server: [$mgmt_dns1] " ip_dns1
+            ip_dns1=${ip_dns1:-"$mgmt_dns1"}
+  ip_cidr=$(netmask_to_cidr "$ip_netmask")
+  echo
+  echo "New Configuration:"
+  echo "-------------------------------"
+  echo "OVS Bridge:     $bridge"
+  echo "OVS Port:       $eth_interface"
+  echo "Mgmt Interface: $bridge"
+  echo "IPv4 Address:   $ip_address"
+  echo "IPv4 Netmask:   $ip_netmask"
+  echo "IPv4 CIDR:      $ip_cidr"
+  echo "IPv4 Gateway:   $ip_gateway"
+  echo "IPv4 DNS:       $ip_dns1"
+  echo
+  while true; do read -r -p "Apply configuration? [y/n] " choice
+    case "$choice" in 
+      y|Y ) 
+      # create ovs bridge
+            #ensure running state is current
+            systemctl restart NetworkManager 
+            # delete the config for the shared interface
+            if [ "$(nmcli conn show | grep ^$eth_interface)" != "" ];then nmcli conn delete "$eth_interface";fi 
+            # create the ovs bridge
+            if [ "$(nmcli conn show | grep ^$bridge)" == "" ];then 
+              nmcli conn add type ovs-bridge conn.interface "$bridge" con-name "$bridge" autoconnect yes ipv6.addr-gen-mode 0 
+            fi
+            if [ "$(nmcli conn show | grep ^ovs-slave-$bridge | grep ovs-port)" == "" ];then 
+              nmcli conn add type ovs-port conn.interface "$bridge" master "$bridge" autoconnect yes
+            fi 
+            ovs_interface=$(nmcli -t d | grep ^$bridge:ovs-interface |cut -d: -f4)
+            if [ "$ovs_interface" == "" ];then
+              nmcli conn add \
+                type ovs-interface \
+                slave-type ovs-port \
+                conn.interface "$bridge" \
+                master "$bridge" \
+                ipv4.method manual \
+                ipv4.address "$ip_address/$ip_cidr" \
+                ipv4.gateway "$ip_gateway" \
+                ipv4.dns "$ip_dns1" \
+                autoconnect yes \
+                ipv6.addr-gen-mode 0 
+            fi
+            ovs_interface=$(nmcli -t d | grep ^$bridge:ovs-interface |cut -d: -f4)
+            if [ "$ovs_interface" != "" ];then
+              nmcli conn modify "$ovs_interface" \
+                ipv4.method manual \
+                ipv4.address "$ip_address/$ip_cidr" \
+                ipv4.gateway "$ip_gateway" \
+                ipv4.dns "$ip_dns1" \
+                autoconnect yes \
+                ipv6.addr-gen-mode 0 
+            fi
+            if [ "$(nmcli conn show | grep ^ovs-slave-$eth_interface | grep ovs-port)" == "" ];then
+              nmcli conn add type ovs-port conn.interface "$eth_interface" master "$bridge" autoconnect yes  
+            fi 
+            if [ "$(nmcli conn show | grep ^ovs-slave-$eth_interface | grep ethernet)" == "" ];then
+              nmcli conn add type ethernet conn.interface "$eth_interface" master "$eth_interface" autoconnect yes 
+            fi 
+            # apply changes
+            systemctl restart NetworkManager
+            break ;;
+      n|N ) break ;;
+      * ) echo "Invalid response: [ $choice ]." ;;
+    esac
+  done
+
+}
+
+function host_setup_network_2 (){
+  get_host_mgmt_network
+  eth_interface=$(ip link show | grep -E ': (eth|enp|eno|ens)' | head -n 1 | cut -d' ' -f2 | cut -d':' -f1)
+  bridge=$(nmcli d | grep ovs-bridge | cut -d' ' -f1)
+  if [ "$bridge" == "" ];then 
+    read -p "OVS Bridge: [br0] " bridge
+              bridge=${bridge:-"br0"}
+  else 
+    echo  "OVS Bridge: $bridge"
+  fi
+
+  # empty bond could indicate single uplink
+  read -p "OVS Bond: [bond0] " bond
+            bond=${bond:-"bond0"}
+  echo "Enter the physical interface names to add to the bond, separated by spaces (e.g., $(get_physical_network_interfaces)):"
+  read -p "Bond Interfaces: " INTERFACES
+
+  # prompt for bond type
+
+  # should prompt for mgmt interface
+  # if it is in the bond list apply the config to the bridge
+  echo    "Mgmt Interface: $eth_interface"
+
+  read -p "IPv4 address: [$mgmt_ip] " ip_address
+            ip_address=${ip_address:-"$mgmt_ip"}
+  read -p "IPv4 netmask: [$mgmt_netmask] " ip_netmask
+            ip_netmask=${ip_netmask:-"$mgmt_netmask"}
+  read -p "IPv4 gateway: [$mgmt_gateway] " ip_gateway
+            ip_gateway=${ip_gateway:-"$mgmt_gateway"}
+  read -p "IPv4 DNS Server: [$mgmt_dns1] " ip_dns1
+            ip_dns1=${ip_dns1:-"$mgmt_dns1"}
+  ip_cidr=$(netmask_to_cidr "$ip_netmask")
+  echo
+  echo "New Configuration:"
+  echo "-------------------------------"
+  echo "OVS Bridge:     $bridge"
+  echo "OVS Port:       $eth_interface"
+  echo "Mgmt Interface: $bridge"
+  echo "IPv4 Address:   $ip_address"
+  echo "IPv4 Netmask:   $ip_netmask"
+  echo "IPv4 CIDR:      $ip_cidr"
+  echo "IPv4 Gateway:   $ip_gateway"
+  echo "IPv4 DNS:       $ip_dns1"
+  echo
+  while false; do read -r -p "Apply configuration? [y/n] " choice
+    case "$choice" in 
+      y|Y ) 
+      # create ovs bridge
+            #ensure running state is current
+            systemctl restart NetworkManager 
+            # delete the config for the shared interface
+            if [ "$(nmcli conn show | grep ^$eth_interface)" != "" ];then nmcli conn delete "$eth_interface";fi 
+            # create the ovs bridge
+            if [ "$(nmcli conn show | grep ^$bridge)" == "" ];then 
+              nmcli conn add type ovs-bridge conn.interface "$bridge" con-name "$bridge" autoconnect yes ipv6.addr-gen-mode 0 
+            fi
+            if [ "$(nmcli conn show | grep ^ovs-slave-$bridge | grep ovs-port)" == "" ];then 
+              nmcli conn add type ovs-port conn.interface "$bridge" master "$bridge" autoconnect yes
+            fi 
+            ovs_interface=$(nmcli -t d | grep ^$bridge:ovs-interface |cut -d: -f4)
+            if [ "$ovs_interface" == "" ];then
+              nmcli conn add \
+                type ovs-interface \
+                slave-type ovs-port \
+                conn.interface "$bridge" \
+                master "$bridge" \
+                ipv4.method manual \
+                ipv4.address "$ip_address/$ip_cidr" \
+                ipv4.gateway "$ip_gateway" \
+                ipv4.dns "$ip_dns1" \
+                autoconnect yes \
+                ipv6.addr-gen-mode 0 
+            fi
+            ovs_interface=$(nmcli -t d | grep ^$bridge:ovs-interface |cut -d: -f4)
+            if [ "$ovs_interface" != "" ];then
+              nmcli conn modify "$ovs_interface" \
+                ipv4.method manual \
+                ipv4.address "$ip_address/$ip_cidr" \
+                ipv4.gateway "$ip_gateway" \
+                ipv4.dns "$ip_dns1" \
+                autoconnect yes \
+                ipv6.addr-gen-mode 0 
+            fi
+            if [ "$(nmcli conn show | grep ^ovs-slave-$eth_interface | grep ovs-port)" == "" ];then
+              nmcli conn add type ovs-port conn.interface "$eth_interface" master "$bridge" autoconnect yes  
+            fi 
+            if [ "$(nmcli conn show | grep ^ovs-slave-$eth_interface | grep ethernet)" == "" ];then
+              nmcli conn add type ethernet conn.interface "$eth_interface" master "$eth_interface" autoconnect yes 
+            fi 
+            # apply changes
+            systemctl restart NetworkManager
+            break ;;
+      n|N ) break ;;
+      * ) echo "Invalid response: [ $choice ]." ;;
+    esac
+  done
+
+}
+
+function host_setup_network () { 
+  while true; do read -r -p "Configure Host Networking? [y/n] " choice
+    case "$choice" in 
+      y|Y ) break ;;
+      n|N ) return 1; break ;;
+      * ) echo "Invalid response: [ $choice ]." ;;
+    esac
+  done
+
+  # detect single nic config here and branch to nmcli workflow
+  nic_count=$(lspci | grep -i ethernet | wc -l)
+  if [ "$nic_count" == "1" ];then 
+    echo "Single NIC Configuration Detected."
+    host_setup_network_shared
+    return 0
+  fi
+
+
+  #otherwise go to ovs setup
+  ovs_menu
+  while true; do
+    echo
+    read -r -p "Configure OVS Bridge? [y/n] " choice
+    case "$choice" in
+      y|Y )
+            read -p "Bridge name: [br0] " bridge
+            bridge=${bridge:-"br0"}
+            echo "bridge: $bridge"
+
+            read -p "Uplink port name: " ovs_port
+            echo "port: $ovs_port"          
+
+            if ovs-vsctl br-exists "$bridge";then echo "bridge $bridge already exists.";fi 
+
+            # test if uplink is shared
+            # shared: run nmcli workflow
+            # dedicated: run vsctl workflow
+
+            # create ovs bridge
+            # This version assumes a dedicated mgmt port
+              # ovs-vsctl add-br br0
+              # ovs-vsctl add-port br0 ens33
+              # ovs-vsctl set int {{item}} mtu_request={{ovs_bond_mtu}}"
+            break ;;
+      n|N ) break ;;
+        * ) echo "Invalid response: [ $choice ]." ;;
+    esac
+  done
+
+}
+
+function host_setup_packages () {
+  # install packages
+  while true; do
+    read -r -p "Install kvm and required packages? [y/n] " choice
+    case "$choice" in
+      y|Y )
+          dnf install -y qemu-kvm libvirt virt-install lshw lsscsi lsof telnet libibverbs fence-agents-all
+          # Also listed as required in the docs but not really required
+          #   pacemaker-2.1.4-5
+          #   pcs-0.10.14-5
+          break
+          ;;
+      n|N ) break ;;
+        * ) echo "Invalid response: [ $choice ]." ;;
+    esac
+    echo
+  done
+
+  #install openvswitch from RDO
+  while [[ "$(which ovs-vsctl)" == "" ]]; do
+    read -r -p "Install openvswitch from RDO? [y/n] " choice
+    case "$choice" in
+      y|Y )
+          dnf install -y http://trunk.rdoproject.org/rdo_release/rdo-release.el9s.rpm
+          dnf install -y NetworkManager-ovs openvswitch
+          break
+          ;;
+      n|N ) break ;;
+        * ) echo "Invalid response: [ $choice ]." ;;
+    esac
+    echo
+  done
+
+  #install openvswitch from NVF
+  while [[ "$(which ovs-vsctl)" == "" ]]; do
+    read -r -p "Install openvswitch from NFV? [y/n] " choice
+    case "$choice" in
+      y|Y )
+          dnf install -y centos-release-nfv-common centos-release-nfv-openvswitch
+          dnf install -y NetworkManager-ovs openvswitch3.5
+          break
+          ;;
+      n|N ) break ;;
+        * ) echo "Invalid response: [ $choice ]." ;;
+    esac
+    echo
+  done
+
+  # Set qemu user and group
+  sed -i 's/^#user =.*/user = "root"/' /etc/libvirt/qemu.conf
+  sed -i 's/^#group =.*/group = "root"/' /etc/libvirt/qemu.conf
+
+  # start and enable libvirtd
+  systemctl enable libvirtd --now
+
+  # configure udev rules
+  echo 'SUBSYSTEM=="net", ACTION=="add", KERNEL=="ontapn*", ATTR{tx_queue_len}="5000"' > /etc/udev/rules.d/99-ontaptxqueuelen.rules
+
+  # enable OpenVswitch
+  if [[ "$(which ovs-vsctl)" != "" ]];then 
+    systemctl enable openvswitch --now
+  else 
+    echo "WARNING: openvswitch is not installed."
+  fi 
+
+  # Restart NetworkManager
+  systemctl restart NetworkManager
+
+}
+
+function host_setup_storage () {
+  # configure storage pool
+  while true; do
+    read -r -p "Configure Storage Pool? [y/n] " choice
+    case "$choice" in
+      y|Y )
+          read -p "Storage pool name: [select_pool] " pool_name
+          pool_name=${pool_name:-"select_pool"}
+          echo 
+          echo "Discovered block devices:"
+          lsblk --list | grep -v lvm
+          read -p "Storage pool block device: [$pool_device] " pool_device
+          if [ "$pool_name" != "" ] && [ "$pool_device" != "" ];then 
+            while true; do
+              read -r -p "Storage pool [$pool_name] will be created on device [$pool_device]. Continue? [y/n] " choice
+              case "$choice" in
+                y|Y ) 
+                      # Create the storage pool
+                      if [ "$(virsh pool-list --name --all | grep $pool_name)" == "" ];then
+                        virsh pool-define-as "$pool_name" logical --source-dev /dev/$pool_device --target=/dev/$pool_name
+                      fi
+                      if [ "$(virsh pool-list --name | grep $pool_name)" == "" ];then
+                        virsh pool-build "$pool_name"
+                        virsh pool-start "$pool_name"
+                      fi
+                      virsh pool-autostart "$pool_name"
+                      if [ "$(virsh vol-list --pool select_pool | grep keepalive)" == "" ];then 
+                        virsh vol-create-as --pool "$pool_name" --name keepalive --capacity 1g
+                      fi
+                      break ;;
+                n|N ) break ;;
+                  * ) echo "Invalid response: [ $choice ]." ;;
+              esac
+            done
+            break
+          else
+            echo "Storage pool creation cancelled.  Pool: $pool_name, Device: $pool_device"
+          fi
+          ;;
+        n|N ) break ;;
+          * ) echo "Invalid response: [ $choice ]." ;;
+      esac
+    done
+
+}
+
 # This just reloads the spcli script
 # Does not reboot the host
 function sp_reboot () {
@@ -182,12 +760,15 @@ function sp_reboot () {
 }
 
 function sp_status () {
+   get_host_mgmt_network
+   echo "SP CLI Version:       $spcli_version"
    echo "Firmware Version:     $(cat /etc/os-release | grep PRETTY_NAME | cut -d'"' -f2)"
+   echo "Management port:      $mgmt_port"
+   echo "Ethernet link:        $mgmt_port_status"
    echo "IPv4 configuration:"
-   echo "  IP Address:         $(ifconfig | grep "inet " | grep -v "127.0.0.1" | tr -s ' ' | cut -d' ' -f3)"
-   echo "  Netmask:            $(ifconfig | grep "inet " | grep -v "127.0.0.1" | tr -s ' ' | cut -d' ' -f5)"
+   echo "  IP Address:         $mgmt_ip"
+   echo "  Netmask:            $mgmt_netmask"
    echo "  Gateway:            $(ip route | grep default | cut -d' ' -f 3)"
-   
 }
 
 function system_console () {
@@ -449,6 +1030,12 @@ function help (){
         echo "exit - exit from the SP command line interface" ;;
     "help help"   )
         echo "help - print command help" ;;
+    *"host"* )
+        echo "host setup all - configure all host settings"
+        echo "host setup network - configure host networking"
+        echo "host setup packages - configure host software packages"
+        echo "host setup storage - configure host storage"
+        echo ;;
     *"priv set"* )
         echo "priv set admin - enter into admin user mode"
         echo "priv set -q admin - enter into admin user mode"
@@ -545,6 +1132,7 @@ function help (){
         echo "exit - exit from the SP command line interface"
         echo "events - print system events and event information"
         echo "help - print command help"
+        [ "$priv_mode" == "diag" ] && echo "host - configure host"
         echo "priv - show and set user mode"
         echo "sp - commands to control the SP"
         echo "system - commands to control the system"
@@ -556,9 +1144,10 @@ function help (){
 
 function enforce_priv_mode () {
   case $cmd in
-    *"system printenv"* )  if [ "$priv_mode" != "diag" ]; then cmd="unauthorized";fi ;;
-    *"system setenv"* )  if [ "$priv_mode" != "diag" ]; then cmd="unathorized";fi ;;
+    *"system printenv"* ) if [ "$priv_mode" != "diag" ]; then cmd="unauthorized";fi ;;
+    *"system setenv"*   ) if [ "$priv_mode" != "diag" ]; then cmd="unathorized";fi ;;
     *"system unsetenv"* ) if [ "$priv_mode" != "diag" ]; then cmd="unauthorized";fi ;;
+    *"host setup"*      ) if [ "$priv_mode" != "diag" ]; then cmd="unauthorized";fi ;;
   esac 
 }
 
@@ -578,6 +1167,11 @@ function run_command () {
     "events" | "events "* ) help ;;
     "exit" | "exit "* ) exit ;;
     "help" | "help "* | "?"  ) help ;;
+    "host" ) help ;;
+    "host setup" | "host setup all" ) host_setup_all ;;
+    "host setup packages" ) host_setup_packages ;;
+    "host setup network" ) host_setup_network ;;
+    "host setup storage" ) host_setup_storage ;;
     "priv set" | "priv set admin" | "priv set admin "* )
         priv_mode="admin"
         echo "Administrative commands"
