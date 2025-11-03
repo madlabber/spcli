@@ -373,6 +373,24 @@ netmask_to_cidr() {
     echo "$cidr_prefix"
 }
 
+function is_valid_ip () {
+  echo "$1" | grep -qE "\b(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b"
+}
+
+function is_valid_netmask () {
+  echo "$1" | grep -qP '^(255\.){3}(255|254|252|248|240|224|192|128|0)$|^(255\.){2}(255|254|252|248|240|224|192|128|0)\.0$|^(255\.)(255|254|252|248|240|224|192|128|0)(\.0){2}$|^(255|254|252|248|240|224|192|128|0)(\.0){3}$'
+}
+
+function validate_bond_ports () {
+for word in $1; do
+  if ! echo "$2" | grep -qw "$word"; then
+    return 1
+    break
+  fi
+done
+return 0
+}
+
 function get_physical_network_interfaces () {
   interface_list=""
   # Iterate through each network interface in /sys/class/net/
@@ -485,69 +503,187 @@ function host_setup_network_shared (){
 function host_setup_network_2 (){
   get_host_mgmt_network
   eth_interface=$(ip link show | grep -E ': (eth|enp|eno|ens)' | head -n 1 | cut -d' ' -f2 | cut -d':' -f1)
+  interface_list="$(get_physical_network_interfaces)"
+
+  # bridge
   bridge=$(nmcli d | grep ovs-bridge | cut -d' ' -f1)
   if [ "$bridge" == "" ];then 
     read -p "OVS Bridge: [br0] " bridge
-              bridge=${bridge:-"br0"}
+            bridge=${bridge:-"br0"}
   else 
     echo  "OVS Bridge: $bridge"
   fi
+  
+  # bond
+  bond=$(ovs-appctl bond/list | grep -v recircID | head -n1 | cut -f1)
+  if [ "$bond" == "" ];then 
+      default_bond="bond0"
+      read -p "OVS Bond: [$default_bond] " bond
+              bond=${bond:-"$default_bond"}
+  else 
+      echo "OVS Bond: $bond"
+  fi 
 
-  # empty bond could indicate single uplink
-  read -p "OVS Bond: [bond0] " bond
-            bond=${bond:-"bond0"}
-  echo "Enter the physical interface names to add to the bond, separated by spaces (e.g., $(get_physical_network_interfaces)):"
-  read -p "Bond Interfaces: " INTERFACES
+  # bond mode
+  echo
+  echo "Available bonding modes: active-backup, balance-slb, balance-tcp, lacp"
+  default_bond_mode=$(ovs-appctl bond/list | grep -v recircID | head -n1 | cut -f2)
+  default_bond_mode=${default_bond_mode:-active-backup}
+  while true; do 
+    read -p "Enter the desired bonding mode: [$default_bond_mode] " bond_mode
+    bond_mode=${bond_mode:-"$default_bond_mode"}
+    case $bond_mode in 
+      active-backup ) break ;;
+      balance-slb   ) break ;;
+      balance-tcp   ) break ;;
+      lacp          ) break ;;
+    esac
+  done 
 
-  # prompt for bond type
+  # MTU
+  while true; do 
+    read -p "bond MTU: [9000] " bond_mtu
+             bond_mtu=${bond_mtu:-9000}
+    if [ "$bond_mtu" -le 9000 ] && [ "$bond_mtu" -ge 1500 ];then break;fi 
+  done 
 
-  # should prompt for mgmt interface
-  # if it is in the bond list apply the config to the bridge
-  echo    "Mgmt Interface: $eth_interface"
+  # Interfaces
+  echo
+  echo    "Available Interfaces: $interface_list"
 
-  read -p "IPv4 address: [$mgmt_ip] " ip_address
-            ip_address=${ip_address:-"$mgmt_ip"}
-  read -p "IPv4 netmask: [$mgmt_netmask] " ip_netmask
-            ip_netmask=${ip_netmask:-"$mgmt_netmask"}
-  read -p "IPv4 gateway: [$mgmt_gateway] " ip_gateway
-            ip_gateway=${ip_gateway:-"$mgmt_gateway"}
-  read -p "IPv4 DNS Server: [$mgmt_dns1] " ip_dns1
-            ip_dns1=${ip_dns1:-"$mgmt_dns1"}
-  ip_cidr=$(netmask_to_cidr "$ip_netmask")
+  # Mgmt Interface
+  while true; do
+    read -p "Mgmt Interface: [$eth_interface] " ip_interface
+             ip_interface=${ip_interface:-"$eth_interface"}
+    echo "ip_interface: $ip_interface"
+    if echo "$interface_list" | grep -qw "$ip_interface"; then break; fi 
+  done 
+
+  # Bond interfaces
+  while true; do
+    default_bond_interfaces="${interface_list#$ip_interface}"
+    if [[ -z "${default_bond_interfaces//[[:space:]]/}" ]];then default_bond_interfaces="$ip_interface";fi
+    read -p "Bond Interfaces, separated by spaces: [ $default_bond_interfaces ] " bond_interfaces
+           bond_interfaces=${bond_interfaces:-"$default_bond_interfaces"}
+    if validate_bond_ports "$bond_interfaces" "$interface_list";then break; fi
+  done
+
+  # if mgmt interface is added to bond, move mgmt to the bridge
+  if echo "$bond_interfaces" | grep -qw "$ip_interface"; then ip_interface="$bridge";fi
+
+  # IP configuration
+  while true; do
+    read -p "IPv4 address: [$mgmt_ip] " ip_address
+             ip_address=${ip_address:-"$mgmt_ip"}
+    if is_valid_ip "$ip_address";then break; fi
+  done
+
+  while true; do
+    read -p "IPv4 netmask: [$mgmt_netmask] " ip_netmask
+             ip_netmask=${ip_netmask:-"$mgmt_netmask"}
+    if is_valid_netmask "$ip_netmask";then 
+      ip_cidr=$(netmask_to_cidr "$ip_netmask")
+      break
+    fi    
+  done
+
+  while true; do
+    read -p "IPv4 gateway: [$mgmt_gateway] " ip_gateway
+             ip_gateway=${ip_gateway:-"$mgmt_gateway"}
+    if is_valid_ip "$ip_gateway";then break; fi
+  done
+
+  while true; do 
+    read -p "IPv4 DNS Server: [$mgmt_dns1] " ip_dns1
+             ip_dns1=${ip_dns1:-"$mgmt_dns1"}
+    if is_valid_ip "$ip_dns1";then break; fi
+  done
+  
   echo
   echo "New Configuration:"
   echo "-------------------------------"
-  echo "OVS Bridge:     $bridge"
-  echo "OVS Port:       $eth_interface"
-  echo "Mgmt Interface: $bridge"
-  echo "IPv4 Address:   $ip_address"
-  echo "IPv4 Netmask:   $ip_netmask"
-  echo "IPv4 CIDR:      $ip_cidr"
-  echo "IPv4 Gateway:   $ip_gateway"
-  echo "IPv4 DNS:       $ip_dns1"
+  echo "OVS Bridge:      $bridge"
+  echo "OVS Bond:        $bond"
+  echo "Bond Mode:       $bond_mode"
+  echo "Bond Interfaces: $bond_interfaces"
+  echo "Mgmt Interface:  $ip_interface"
+  echo "IPv4 Address:    $ip_address"
+  echo "IPv4 Netmask:    $ip_netmask"
+  echo "IPv4 CIDR:       $ip_cidr"
+  echo "IPv4 Gateway:    $ip_gateway"
+  echo "IPv4 DNS:        $ip_dns1"
   echo
-  while false; do read -r -p "Apply configuration? [y/n] " choice
+
+  while true; do read -r -p "Apply configuration? [y/n] " choice
     case "$choice" in 
       y|Y ) 
-      # create ovs bridge
+            # create ovs bridge
             #ensure running state is current
             systemctl restart NetworkManager 
-            # delete the config for the shared interface
-            if [ "$(nmcli conn show | grep ^$eth_interface)" != "" ];then nmcli conn delete "$eth_interface";fi 
+
             # create the ovs bridge
             if [ "$(nmcli conn show | grep ^$bridge)" == "" ];then 
               nmcli conn add type ovs-bridge conn.interface "$bridge" con-name "$bridge" autoconnect yes ipv6.addr-gen-mode 0 
             fi
-            if [ "$(nmcli conn show | grep ^ovs-slave-$bridge | grep ovs-port)" == "" ];then 
-              nmcli conn add type ovs-port conn.interface "$bridge" master "$bridge" autoconnect yes
+            echo "bridge: $bridge"
+
+            # create interface bridge interface
+            bridge_port=$(nmcli -t -f DEVICE,TYPE,CONNECTION d | grep "$bridge:ovs-port" | cut -d: -f3)
+            if [ "$bridge_port" == "" ];then 
+              nmcli con add type ovs-port conn.interface "$bridge" master "$bridge" autoconnect yes
+              bridge_port=$(nmcli -t -f DEVICE,TYPE,CONNECTION d | grep "$bridge:ovs-port" | cut -d: -f3)
             fi 
-            ovs_interface=$(nmcli -t d | grep ^$bridge:ovs-interface |cut -d: -f4)
-            if [ "$ovs_interface" == "" ];then
-              nmcli conn add \
-                type ovs-interface \
-                slave-type ovs-port \
-                conn.interface "$bridge" \
-                master "$bridge" \
+            echo "bridge_port: $bridge_port"
+
+            bridge_interface=$(nmcli -t -f TYPE,DEVICE,NAME c | grep ovs-interface:br0 | cut -d: -f3)
+            if [ "$bridge_interface" == "" ];then 
+              bridge_interface="ovs-if-$bridge"
+              nmcli con add type ovs-interface slave-type ovs-port conn.interface "$bridge" master "$bridge_port" \
+                    con-name "$bridge_interface" ipv4.method disabled mtu "$bond_mtu" ipv6.addr-gen-mode 0 autoconnect yes 
+            else
+              echo "modify $bridge_interface"
+              nmcli conn modify "$bridge_interface" ipv4.method disabled mtu "$bond_mtu" ipv6.addr-gen-mode 0 autoconnect yes
+            fi
+            echo "bridge_interface: $bridge_interface"
+
+
+            # scenario 1: mgmt IP moved to the bridge
+            if [ "$ip_interface" == "$bridge" ];then echo "scenario1"
+              # tear down old connection
+              conn_name=$(nmcli -t -f DEVICE,TYPE,CONNECTION d | grep "$eth_interface:ethernet" | cut -d: -f3)
+              if [ "$conn_name" != "" ];then nmcli conn delete "$conn_name";fi
+
+              # IP the bridge interface
+              nmcli conn modify "$bridge_interface" \
+                ipv4.method manual \
+                ipv4.address "$ip_address/$ip_cidr" \
+                ipv4.gateway "$ip_gateway" \
+                ipv4.dns "$ip_dns1" \
+                autoconnect yes \
+                ipv6.addr-gen-mode 0 
+            
+            # scenario 2: managemnt interface not moving
+            elif [ "$ip_interface" == "$eth_interface" ];then echo "scenario 2"
+              nmcli conn modify "$ip_interface" \
+                ipv4.method manual \
+                ipv4.address "$ip_address/$ip_cidr" \
+                ipv4.gateway "$ip_gateway" \
+                ipv4.dns "$ip_dns1" \
+                autoconnect yes \
+                ipv6.addr-gen-mode 0 
+            
+            # scenario 3: management interface being moved
+            else echo "scenario 3"
+              # tear down old interface
+              conn_name=$(nmcli -t -f DEVICE,TYPE,CONNECTION d | grep "$eth_interface:ethernet" | cut -d: -f3)
+              if [ "$conn_name" != "" ];then nmcli conn delete "$conn_name";fi
+
+              # tear down new interface
+              conn_name=$(nmcli -t -f DEVICE,TYPE,CONNECTION d | grep "$ip_interface:ethernet" | cut -d: -f3)
+              if [ "$conn_name" != "" ];then nmcli conn delete "$conn_name";fi
+
+              # configure new interface
+              nmcli conn add type ethernet conn.interface "$ip_interface" con-name "$ip_interface" \
                 ipv4.method manual \
                 ipv4.address "$ip_address/$ip_cidr" \
                 ipv4.gateway "$ip_gateway" \
@@ -555,24 +691,42 @@ function host_setup_network_2 (){
                 autoconnect yes \
                 ipv6.addr-gen-mode 0 
             fi
-            ovs_interface=$(nmcli -t d | grep ^$bridge:ovs-interface |cut -d: -f4)
-            if [ "$ovs_interface" != "" ];then
-              nmcli conn modify "$ovs_interface" \
-                ipv4.method manual \
-                ipv4.address "$ip_address/$ip_cidr" \
-                ipv4.gateway "$ip_gateway" \
-                ipv4.dns "$ip_dns1" \
-                autoconnect yes \
-                ipv6.addr-gen-mode 0 
-            fi
-            if [ "$(nmcli conn show | grep ^ovs-slave-$eth_interface | grep ovs-port)" == "" ];then
-              nmcli conn add type ovs-port conn.interface "$eth_interface" master "$bridge" autoconnect yes  
+
+            # create the bond 
+            if [ "$(nmcli conn show | grep ^$bond)" == "" ];then
+              nmcli connection add type ovs-port conn.interface "$bond" master "$bridge" con-name "$bond"
             fi 
-            if [ "$(nmcli conn show | grep ^ovs-slave-$eth_interface | grep ethernet)" == "" ];then
-              nmcli conn add type ethernet conn.interface "$eth_interface" master "$eth_interface" autoconnect yes 
+
+            # set bond mode
+            nmcli connection modify "$bond" ovs-port.bond-mode "$bond_mode"
+
+            # set lacp mode
+            if [ "$bond_mode" == "lacp" ];then 
+              nmcli con modify "$bond" ovs-port.lacp active
+            else 
+              nmcli con modify "$bond" ovs-port.lacp off
             fi 
+
+            # Add interfaces
+            for eth in $bond_interfaces; do 
+              # remove any existing connection
+              conn_name=$(nmcli -t -f DEVICE,TYPE,CONNECTION d | grep "$eth:ethernet" | cut -d: -f3)
+              if [ "$conn_name" != "" ];then nmcli conn delete "$conn_name";fi
+
+              # add interface to bond
+              nmcli connection add type ethernet conn.interface "$eth" master "$bond" con-name "ovs-slave-$eth" mtu "$bond_mtu"
+            done
+            
+            # Bring up the connections
+            nmcli con up "$bridge"
+            nmcli con up "$bond"
+            for eth in $bond_interfaces; do 
+              nmcli conn up "ovs-slave-$eth"
+            done
+            
             # apply changes
             systemctl restart NetworkManager
+
             break ;;
       n|N ) break ;;
       * ) echo "Invalid response: [ $choice ]." ;;
@@ -590,45 +744,21 @@ function host_setup_network () {
     esac
   done
 
-  # detect single nic config here and branch to nmcli workflow
-  nic_count=$(lspci | grep -i ethernet | wc -l)
-  if [ "$nic_count" == "1" ];then 
-    echo "Single NIC Configuration Detected."
-    host_setup_network_shared
-    return 0
-  fi
+  host_setup_network_2
 
+  # detect single nic config here and branch to nmcli workflow
+  # nic_count=$(lspci | grep -i ethernet | wc -l)
+  # if [ "$nic_count" == "1" ];then 
+  #   echo "Single NIC Configuration Detected."
+  #   host_setup_network_shared
+  #   return 0
+  # else 
+  #   host_setup_network_2
+  # fi
 
   #otherwise go to ovs setup
-  ovs_menu
-  while true; do
-    echo
-    read -r -p "Configure OVS Bridge? [y/n] " choice
-    case "$choice" in
-      y|Y )
-            read -p "Bridge name: [br0] " bridge
-            bridge=${bridge:-"br0"}
-            echo "bridge: $bridge"
-
-            read -p "Uplink port name: " ovs_port
-            echo "port: $ovs_port"          
-
-            if ovs-vsctl br-exists "$bridge";then echo "bridge $bridge already exists.";fi 
-
-            # test if uplink is shared
-            # shared: run nmcli workflow
-            # dedicated: run vsctl workflow
-
-            # create ovs bridge
-            # This version assumes a dedicated mgmt port
-              # ovs-vsctl add-br br0
-              # ovs-vsctl add-port br0 ens33
-              # ovs-vsctl set int {{item}} mtu_request={{ovs_bond_mtu}}"
-            break ;;
-      n|N ) break ;;
-        * ) echo "Invalid response: [ $choice ]." ;;
-    esac
-  done
+  #ovs_menu
+  
 
 }
 
@@ -1170,8 +1300,8 @@ function run_command () {
     "host" ) help ;;
     "host setup" | "host setup all" ) host_setup_all ;;
     "host setup packages" ) host_setup_packages ;;
-    "host setup network" ) host_setup_network ;;
-    "host setup storage" ) host_setup_storage ;;
+    "host network setup" | "host setup network" ) host_setup_network ;;
+    "host storage setup" | "host setup storage" ) host_setup_storage ;;
     "priv set" | "priv set admin" | "priv set admin "* )
         priv_mode="admin"
         echo "Administrative commands"
