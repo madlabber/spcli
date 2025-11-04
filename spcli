@@ -70,7 +70,7 @@ function get_host_mgmt_network () {
   if [ "$(ifconfig $mgmt_port | grep UP)" != "" ]; then mgmt_port_status="Up"; else mgmt_port_status="Down";fi
   mgmt_ip=$(ifconfig "$mgmt_port" | grep -v inet6 | grep inet | tr -s ' '| cut -d' ' -f3)
   mgmt_netmask=$(ifconfig "$mgmt_port" | grep -v inet6 | grep inet | tr -s ' '| cut -d' ' -f5)  
-  mgmt_gateway=$(ip route | grep default | cut -d' ' -f 3)
+  mgmt_gateway=$(ip route | grep default | head -n 1 | cut -d' ' -f 3)
   mgmt_dns1=$(nmcli dev show | grep DNS | head -n 1 | tr -s ' ' | cut -d' ' -f2)
 
 }
@@ -194,10 +194,8 @@ function log_system_console () {
 function host_setup_all () {
   echo 
   host_setup_packages
-  host_setup_storage  
-  #host_setup_network_2
-  host_setup_network
-
+  host_storage_setup  
+  host_network_setup
 }
 
 # Ensure the script is run with root privileges
@@ -207,149 +205,6 @@ function am_i_root (){
     return 1
   fi
   return 0
-}
-
-# Menu driven OVS config
-ovs_menu() {
-    PS3='Please enter your choice: '
-    options=("Create Bridge" "Add Port to Bridge" "Create Bond" "Add Internal Port" "Add VLAN-tagged Port" "Show OVS Config" "Delete Bridge" "Exit")
-    select opt in "${options[@]}"; do
-        case $opt in
-            "Create Bridge")
-                read -p "Enter a name for the new bridge: " bridge_name
-                if [ -z "$bridge_name" ]; then
-                    echo "Bridge name cannot be empty."
-                else
-                    ovs-vsctl --may-exist add-br "$bridge_name"
-                    if [ $? -eq 0 ]; then
-                        echo "Bridge '$bridge_name' created successfully."
-                    else
-                        echo "Failed to create bridge '$bridge_name'."
-                    fi
-                fi
-                ;;
-            "Add Port to Bridge")
-                read -p "Enter the bridge name: " bridge_name
-                read -p "Enter the interface name to add: " interface_name
-                if [ -z "$bridge_name" ] || [ -z "$interface_name" ]; then
-                    echo "Bridge and interface names cannot be empty."
-                else
-                    ovs-vsctl br-exists "$bridge_name"
-                    if [ $? -eq 0 ]; then
-                        ovs-vsctl --may-exist add-port "$bridge_name" "$interface_name"
-                        if [ $? -eq 0 ]; then
-                            echo "Interface '$interface_name' added to bridge '$bridge_name'."
-                        else
-                            echo "Failed to add port '$interface_name'."
-                        fi
-                    else
-                        echo "Error: Bridge '$bridge_name' does not exist."
-                    fi
-                fi
-                ;;
-            "Create Bond")
-                read -p "Enter the bridge name to add the bond to: " bridge_name
-                read -p "Enter a name for the new bond (e.g., bond0): " bond_name
-                read -p "Enter the interfaces to bond (space-separated, e.g., eth1 eth2): " interfaces
-                if [ -z "$bridge_name" ] || [ -z "$bond_name" ] || [ -z "$interfaces" ]; then
-                    echo "Bridge name, bond name, and interfaces cannot be empty."
-                else
-                    ovs-vsctl br-exists "$bridge_name"
-                    if [ $? -eq 0 ]; then
-                        echo "Available bonding modes: active-backup, balance-slb, balance-tcp"
-                        read -p "Enter the desired bonding mode (default: active-backup): " bond_mode
-                        bond_mode=${bond_mode:-active-backup}
-
-                        read -p "Do you want to use LACP? (y/n, default: n): " use_lacp
-                        use_lacp=${use_lacp:-n}
-                        lacp_option=""
-                        if [[ "$use_lacp" == "y" ]]; then
-                            lacp_option="lacp=active"
-                            echo "Note: The remote switch must also be configured for LACP."
-                        fi
-
-                        ovs-vsctl add-bond "$bridge_name" "$bond_name" $interfaces bond_mode="$bond_mode" $lacp_option
-                        if [ $? -eq 0 ]; then
-                            echo "Bond '$bond_name' created on bridge '$bridge_name' with interfaces $interfaces."
-                        else
-                            echo "Failed to create bond '$bond_name'."
-                        fi
-                    else
-                        echo "Error: Bridge '$bridge_name' does not exist."
-                    fi
-                fi
-                ;;
-            "Add Internal Port")
-                read -p "Enter the bridge name: " bridge_name
-                read -p "Enter a name for the new internal port: " port_name
-                if [ -z "$bridge_name" ] || [ -z "$port_name" ]; then
-                    echo "Bridge and port names cannot be empty."
-                else
-                    ovs-vsctl br-exists "$bridge_name"
-                    if [ $? -eq 0 ]; then
-                        ovs-vsctl --may-exist add-port "$bridge_name" "$port_name" -- set Interface "$port_name" type=internal
-                        if [ $? -eq 0 ]; then
-                            echo "Internal port '$port_name' created and added to bridge '$bridge_name'."
-                        else
-                            echo "Failed to create internal port '$port_name'."
-                        fi
-                    else
-                        echo "Error: Bridge '$bridge_name' does not exist."
-                    fi
-                fi
-                ;;
-            "Add VLAN-tagged Port")
-                read -p "Enter the bridge name: " bridge_name
-                read -p "Enter the interface name to add: " interface_name
-                read -p "Enter the VLAN tag: " vlan_tag
-                if [ -z "$bridge_name" ] || [ -z "$interface_name" ] || [ -z "$vlan_tag" ]; then
-                    echo "Bridge name, interface name, and VLAN tag cannot be empty."
-                else
-                    ovs-vsctl br-exists "$bridge_name"
-                    if [ $? -eq 0 ]; then
-                        ovs-vsctl --may-exist add-port "$bridge_name" "$interface_name" tag="$vlan_tag"
-                        if [ $? -eq 0 ]; then
-                            echo "Interface '$interface_name' added to bridge '$bridge_name' with VLAN tag $vlan_tag."
-                        else
-                            echo "Failed to add VLAN-tagged port."
-                        fi
-                    else
-                        echo "Error: Bridge '$bridge_name' does not exist."
-                    fi
-                fi
-                ;;
-            "Show OVS Config")
-                echo "Current Open vSwitch configuration:"
-                ovs-vsctl show
-                ;;
-            "Delete Bridge")
-                echo "Available bridges:"
-                ovs-vsctl list-br
-                read -p "Enter the name of the bridge to delete: " bridge_name
-                if [ -z "$bridge_name" ]; then
-                    echo "Bridge name cannot be empty."
-                else
-                    ovs-vsctl br-exists "$bridge_name"
-                    if [ $? -eq 0 ]; then
-                        ovs-vsctl del-br "$bridge_name"
-                        if [ $? -eq 0 ]; then
-                            echo "Bridge '$bridge_name' deleted successfully."
-                        else
-                            echo "Failed to delete bridge '$bridge_name'."
-                        fi
-                    else
-                        echo "Error: Bridge '$bridge_name' does not exist."
-                    fi
-                fi
-                ;;
-            "Exit")
-                echo "Exiting script. Goodbye!"
-                break
-                ;;
-            *) echo "Invalid option. Please try again." ;;
-        esac
-        echo # Print a newline for spacing
-    done
 }
 
 # Function to convert netmask to CIDR prefix length
@@ -413,94 +268,14 @@ function get_physical_network_interfaces () {
   echo "$interface_list"
 }
 
-function host_setup_network_shared (){
-  get_host_mgmt_network
-  eth_interface=$(ip link show | grep -E ': (eth|enp|eno|ens)' | head -n 1 | cut -d' ' -f2 | cut -d':' -f1)
-  bridge=$(nmcli d | grep ovs-bridge | cut -d' ' -f1)
-  if [ "$bridge" == "" ];then 
-    read -p "OVS Bridge: [br0] " bridge
-              bridge=${bridge:-"br0"}
-  else 
-    echo  "OVS Bridge: $bridge"
-  fi
-  echo    "OVS Port: $eth_interface"
-  read -p "IPv4 address: [$mgmt_ip] " ip_address
-            ip_address=${ip_address:-"$mgmt_ip"}
-  read -p "IPv4 netmask: [$mgmt_netmask] " ip_netmask
-            ip_netmask=${ip_netmask:-"$mgmt_netmask"}
-  read -p "IPv4 gateway: [$mgmt_gateway] " ip_gateway
-            ip_gateway=${ip_gateway:-"$mgmt_gateway"}
-  read -p "IPv4 DNS Server: [$mgmt_dns1] " ip_dns1
-            ip_dns1=${ip_dns1:-"$mgmt_dns1"}
-  ip_cidr=$(netmask_to_cidr "$ip_netmask")
-  echo
-  echo "New Configuration:"
-  echo "-------------------------------"
-  echo "OVS Bridge:     $bridge"
-  echo "OVS Port:       $eth_interface"
-  echo "Mgmt Interface: $bridge"
-  echo "IPv4 Address:   $ip_address"
-  echo "IPv4 Netmask:   $ip_netmask"
-  echo "IPv4 CIDR:      $ip_cidr"
-  echo "IPv4 Gateway:   $ip_gateway"
-  echo "IPv4 DNS:       $ip_dns1"
-  echo
-  while true; do read -r -p "Apply configuration? [y/n] " choice
+function host_network_setup (){
+  while true; do read -r -p "Configure Host Networking? (y/n): [ ] " choice
     case "$choice" in 
-      y|Y ) 
-      # create ovs bridge
-            #ensure running state is current
-            systemctl restart NetworkManager 
-            # delete the config for the shared interface
-            if [ "$(nmcli conn show | grep ^$eth_interface)" != "" ];then nmcli conn delete "$eth_interface";fi 
-            # create the ovs bridge
-            if [ "$(nmcli conn show | grep ^$bridge)" == "" ];then 
-              nmcli conn add type ovs-bridge conn.interface "$bridge" con-name "$bridge" autoconnect yes ipv6.addr-gen-mode 0 
-            fi
-            if [ "$(nmcli conn show | grep ^ovs-slave-$bridge | grep ovs-port)" == "" ];then 
-              nmcli conn add type ovs-port conn.interface "$bridge" master "$bridge" autoconnect yes
-            fi 
-            ovs_interface=$(nmcli -t d | grep ^$bridge:ovs-interface |cut -d: -f4)
-            if [ "$ovs_interface" == "" ];then
-              nmcli conn add \
-                type ovs-interface \
-                slave-type ovs-port \
-                conn.interface "$bridge" \
-                master "$bridge" \
-                ipv4.method manual \
-                ipv4.address "$ip_address/$ip_cidr" \
-                ipv4.gateway "$ip_gateway" \
-                ipv4.dns "$ip_dns1" \
-                autoconnect yes \
-                ipv6.addr-gen-mode 0 
-            fi
-            ovs_interface=$(nmcli -t d | grep ^$bridge:ovs-interface |cut -d: -f4)
-            if [ "$ovs_interface" != "" ];then
-              nmcli conn modify "$ovs_interface" \
-                ipv4.method manual \
-                ipv4.address "$ip_address/$ip_cidr" \
-                ipv4.gateway "$ip_gateway" \
-                ipv4.dns "$ip_dns1" \
-                autoconnect yes \
-                ipv6.addr-gen-mode 0 
-            fi
-            if [ "$(nmcli conn show | grep ^ovs-slave-$eth_interface | grep ovs-port)" == "" ];then
-              nmcli conn add type ovs-port conn.interface "$eth_interface" master "$bridge" autoconnect yes  
-            fi 
-            if [ "$(nmcli conn show | grep ^ovs-slave-$eth_interface | grep ethernet)" == "" ];then
-              nmcli conn add type ethernet conn.interface "$eth_interface" master "$eth_interface" autoconnect yes 
-            fi 
-            # apply changes
-            systemctl restart NetworkManager
-            break ;;
-      n|N ) break ;;
-      * ) echo "Invalid response: [ $choice ]." ;;
+      y|Y ) break ;;
+      n|N ) return 1; break ;;
     esac
   done
 
-}
-
-function host_setup_network_2 (){
   get_host_mgmt_network
   eth_interface=$(ip link show | grep -E ': (eth|enp|eno|ens)' | head -n 1 | cut -d' ' -f2 | cut -d':' -f1)
   interface_list="$(get_physical_network_interfaces)"
@@ -555,8 +330,7 @@ function host_setup_network_2 (){
   while true; do
     read -p "Mgmt Interface: [$eth_interface] " ip_interface
              ip_interface=${ip_interface:-"$eth_interface"}
-    echo "ip_interface: $ip_interface"
-    if echo "$interface_list" | grep -qw "$ip_interface"; then break; fi 
+    if echo "$interface_list $bridge" | grep -qw "$ip_interface"; then break; fi 
   done 
 
   # Bond interfaces
@@ -617,43 +391,51 @@ function host_setup_network_2 (){
   while true; do read -r -p "Apply configuration? [y/n] " choice
     case "$choice" in 
       y|Y ) 
-            # create ovs bridge
             #ensure running state is current
             systemctl restart NetworkManager 
 
             # create the ovs bridge
+            echo "Creating bridge $bridge"
             if [ "$(nmcli conn show | grep ^$bridge)" == "" ];then 
               nmcli conn add type ovs-bridge conn.interface "$bridge" con-name "$bridge" autoconnect yes ipv6.addr-gen-mode 0 
             fi
             echo "bridge: $bridge"
 
             # create interface bridge interface
+            echo "Creating bridge port"
             bridge_port=$(nmcli -t -f DEVICE,TYPE,CONNECTION d | grep "$bridge:ovs-port" | cut -d: -f3)
             if [ "$bridge_port" == "" ];then 
               nmcli con add type ovs-port conn.interface "$bridge" master "$bridge" autoconnect yes
               bridge_port=$(nmcli -t -f DEVICE,TYPE,CONNECTION d | grep "$bridge:ovs-port" | cut -d: -f3)
             fi 
             echo "bridge_port: $bridge_port"
+            echo
 
+            echo "Creating bridge interface"
+            # tear down old bridge inteerface
+            bridge_interface=$(nmcli -t -f TYPE,DEVICE,NAME c | grep "ovs-interface:$bridge" | cut -d: -f3)
+            if [ "$bridge_interface" != "" ];then nmcli conn delete "$bridge_interface";fi 
+
+            # create new bridge interface
+            nmcli con add type ovs-interface slave-type ovs-port conn.interface "$bridge" master "$bridge_port" \
+                  ipv4.method disabled mtu "$bond_mtu" ipv6.addr-gen-mode 0 autoconnect yes 
+            
+            # get bridge interface connection name
             bridge_interface=$(nmcli -t -f TYPE,DEVICE,NAME c | grep ovs-interface:br0 | cut -d: -f3)
-            if [ "$bridge_interface" == "" ];then 
-              bridge_interface="ovs-if-$bridge"
-              nmcli con add type ovs-interface slave-type ovs-port conn.interface "$bridge" master "$bridge_port" \
-                    con-name "$bridge_interface" ipv4.method disabled mtu "$bond_mtu" ipv6.addr-gen-mode 0 autoconnect yes 
-            else
-              echo "modify $bridge_interface"
-              nmcli conn modify "$bridge_interface" ipv4.method disabled mtu "$bond_mtu" ipv6.addr-gen-mode 0 autoconnect yes
-            fi
+
             echo "bridge_interface: $bridge_interface"
+            echo
 
+            # tear down old interface
+            conn_name=$(nmcli -t -f DEVICE,TYPE,CONNECTION d | grep "$eth_interface:ethernet" | cut -d: -f3)
+            if [ "$conn_name" != "" ];then nmcli conn delete "$conn_name";fi
 
-            # scenario 1: mgmt IP moved to the bridge
-            if [ "$ip_interface" == "$bridge" ];then echo "scenario1"
-              # tear down old connection
-              conn_name=$(nmcli -t -f DEVICE,TYPE,CONNECTION d | grep "$eth_interface:ethernet" | cut -d: -f3)
-              if [ "$conn_name" != "" ];then nmcli conn delete "$conn_name";fi
+            # tear down new interface
+            conn_name=$(nmcli -t -f DEVICE,TYPE,CONNECTION d | grep "$ip_interface:ethernet" | cut -d: -f3)
+            if [ "$conn_name" != "" ];then nmcli conn delete "$conn_name";fi
 
-              # IP the bridge interface
+            echo "Setting IP on $ip_interface"
+            if [ "$ip_interface" == "$bridge" ];then 
               nmcli conn modify "$bridge_interface" \
                 ipv4.method manual \
                 ipv4.address "$ip_address/$ip_cidr" \
@@ -662,27 +444,7 @@ function host_setup_network_2 (){
                 autoconnect yes \
                 ipv6.addr-gen-mode 0 
             
-            # scenario 2: managemnt interface not moving
-            elif [ "$ip_interface" == "$eth_interface" ];then echo "scenario 2"
-              nmcli conn modify "$ip_interface" \
-                ipv4.method manual \
-                ipv4.address "$ip_address/$ip_cidr" \
-                ipv4.gateway "$ip_gateway" \
-                ipv4.dns "$ip_dns1" \
-                autoconnect yes \
-                ipv6.addr-gen-mode 0 
-            
-            # scenario 3: management interface being moved
-            else echo "scenario 3"
-              # tear down old interface
-              conn_name=$(nmcli -t -f DEVICE,TYPE,CONNECTION d | grep "$eth_interface:ethernet" | cut -d: -f3)
-              if [ "$conn_name" != "" ];then nmcli conn delete "$conn_name";fi
-
-              # tear down new interface
-              conn_name=$(nmcli -t -f DEVICE,TYPE,CONNECTION d | grep "$ip_interface:ethernet" | cut -d: -f3)
-              if [ "$conn_name" != "" ];then nmcli conn delete "$conn_name";fi
-
-              # configure new interface
+            else 
               nmcli conn add type ethernet conn.interface "$ip_interface" con-name "$ip_interface" \
                 ipv4.method manual \
                 ipv4.address "$ip_address/$ip_cidr" \
@@ -693,10 +455,12 @@ function host_setup_network_2 (){
             fi
 
             # create the bond 
+            echo "creating bond: $bond"
             if [ "$(nmcli conn show | grep ^$bond)" == "" ];then
               nmcli connection add type ovs-port conn.interface "$bond" master "$bridge" con-name "$bond"
             fi 
 
+            echo "setting bond mode: $bond_mode"
             # set bond mode
             nmcli connection modify "$bond" ovs-port.bond-mode "$bond_mode"
 
@@ -707,6 +471,7 @@ function host_setup_network_2 (){
               nmcli con modify "$bond" ovs-port.lacp off
             fi 
 
+            echo "Adding interfaces to bond $bond: $bond_interfaces"
             # Add interfaces
             for eth in $bond_interfaces; do 
               # remove any existing connection
@@ -735,31 +500,27 @@ function host_setup_network_2 (){
 
 }
 
-function host_setup_network () { 
-  while true; do read -r -p "Configure Host Networking? [y/n] " choice
-    case "$choice" in 
-      y|Y ) break ;;
-      n|N ) return 1; break ;;
-      * ) echo "Invalid response: [ $choice ]." ;;
-    esac
-  done
+function host_network_show () {
+  get_host_mgmt_network
 
-  host_setup_network_2
+  bridge=$(nmcli -t -f TYPE,DEVICE,CONNECTION d | grep ^ovs-bridge | cut -d: -f3)
+  bond=$(nmcli -t -f TYPE,DEVICE,CONNECTION d | grep ^ovs-port | grep -v "$bridge" | cut -d: -f3)
+  bond_mode=$(nmcli -t conn show "$bond" | grep bond-mode | cut -d: -f2)
+  bond_interfaces=$(nmcli -t -f DEVICE,TYPE,CONNECTION d | grep ethernet | grep slave |cut -d: -f1 | tr '\n' ' ')
 
-  # detect single nic config here and branch to nmcli workflow
-  # nic_count=$(lspci | grep -i ethernet | wc -l)
-  # if [ "$nic_count" == "1" ];then 
-  #   echo "Single NIC Configuration Detected."
-  #   host_setup_network_shared
-  #   return 0
-  # else 
-  #   host_setup_network_2
-  # fi
-
-  #otherwise go to ovs setup
-  #ovs_menu
-  
-
+  echo
+  echo "Network Configuration:"
+  echo "-------------------------------"
+  echo "OVS Bridge:      $bridge"
+  echo "OVS Bond:        $bond"
+  echo "Bond Mode:       $bond_mode"
+  echo "Bond Interfaces: $bond_interfaces"
+  echo "Mgmt Interface:  $mgmt_port"
+  echo "IPv4 Address:    $mgmt_ip"
+  echo "IPv4 Netmask:    $mgmt_netmask"
+  echo "IPv4 Gateway:    $mgmt_gateway"
+  echo "IPv4 DNS:        $mgmt_dns1"
+  echo
 }
 
 function host_setup_packages () {
@@ -832,7 +593,7 @@ function host_setup_packages () {
 
 }
 
-function host_setup_storage () {
+function host_storage_setup () {
   # configure storage pool
   while true; do
     read -r -p "Configure Storage Pool? [y/n] " choice
@@ -876,6 +637,38 @@ function host_setup_storage () {
       esac
     done
 
+}
+
+function host_storage_show () {
+  echo "Storage Pools:"
+  virsh pool-list --all --details
+  echo 
+  # List all storage pools (including inactive ones)
+  pools=$(virsh pool-list --all --name)
+
+  echo "Pools Backing Devices/Paths:"
+
+  for pool_name in $pools; do
+    # Dump the XML configuration for the pool
+    xml_config=$(virsh pool-dumpxml "$pool_name")
+    
+    # Extract the pool type
+    pool_type=$(echo "$xml_config" | xpath -q -e "/pool/@type" 2>/dev/null | cut -d\" -f2)
+
+    # Extract the source device path or target path based on the pool type
+    backing_device=""
+    if [ "$pool_type" == "dir" ] || [ "$pool_type" == "fs" ] || [ "$pool_type" == "netfs" ]; then
+        backing_device=$(echo "$xml_config" | xpath -q -e "/pool/target/path/text()" 2>/dev/null)
+    elif [ "$pool_type" == "disk" ] || [ "$pool_type" == "iscsi" ] || [ "$pool_type" == "lvm" ] || [ "$pool_type" == "logical" ]; then
+        backing_device=$(echo "$xml_config" | xpath -q -e "/pool/source/device/@path" 2>/dev/null | cut -d\" -f2)
+    fi
+
+    # Print the pool name and its backing device/path
+    printf "Pool: %-20s Type: %-10s Backing Device/Path: %s\n" "$pool_name" "$pool_type" "$backing_device"
+  done
+  echo 
+  echo "Storage Devices:"
+  lsblk --list | grep -v lvm
 }
 
 # This just reloads the spcli script
@@ -1136,139 +929,97 @@ function usage () {
 }
 
 function help (){
-  case $cmd in
-    *"date"* )
-        echo "date - print date and time" ;;
-    *"events all"* ) 
-        echo "events all - print all system events" ;;
-    *"events info"* ) 
-        echo "events info - print system event log information" ;;
-    *"events newest"* )
-        echo "events newest - print newest system events" ;;
-    *"events oldest"* )
-        echo "events oldest - print oldest system events" ;;
-    *"events search"* )
-        echo "events search - search for and print system events" ;;
-    *"events"* )
-        echo "events all - print all system events"
-        echo "events info - print system event log information"
-        echo "events newest - print newest system events"
-        echo "events oldest - print oldest system events"
-        echo "events search - search for and print system events"
-        echo ;;
-    *"exit"* )
-        echo "exit - exit from the SP command line interface" ;;
-    "help help"   )
-        echo "help - print command help" ;;
-    *"host"* )
-        echo "host setup all - configure all host settings"
-        echo "host setup network - configure host networking"
-        echo "host setup packages - configure host software packages"
-        echo "host setup storage - configure host storage"
-        echo ;;
-    *"priv set"* )
-        echo "priv set admin - enter into admin user mode"
-        echo "priv set -q admin - enter into admin user mode"
-        echo "priv set advanced - enter into advanced user mode"
-        echo "priv set -q advanced - enter into advanced user mode(quiet flag)"
-        echo "priv set diag - enter into diag user mode"
-        echo "priv set -q diag - enter into diag user mode(quiet flag)"
-        echo ;;
-    *"priv show"* )
-        echo "priv show - show current user mode" ;;
-    *"priv"* )
-        echo "priv set - set user mode"
-        echo "priv show - show current user mode"
-        echo ;;
-    *"sp reboot"* )
-        echo "sp reboot - reboot the SP";;
-    *"sp status"* )
-        echo "sp status - print SP status information" ;;
-    *"sp uptime" )
-        echo "sp uptime - display the service processor uptime" ;;
-    *"sp"* )
-        echo "sp reboot - reboot the SP"
-        echo "sp status - print SP status information"
-        echo "sp uptime - display service processor uptime"
-        echo ;;
-    *"system acp show"* )
-        echo "system acp show - display ACP info status" ;;
-    *"system acp sensors show"* )
-        echo "system acp sensors show - display expander sensors status" ;;
-    *"system acp"* )
-        echo "system acp show - display ACP info status"
-        echo "system acp sensors show - display expander sensors status" 
-        echo ;;
-    *"system battery"* )
-        echo "system battery show - display battery info status"
-        echo ;;
-    *"system console"* )
-        echo "system console - connect to the system console" ;;
-    *"system core"* )
-        echo "system core - dump the system core and reset" ;;
-    *"system fru"* )
-        echo "system fru show - display fru id inventory data"
-        echo "system fru list - list fru id" 
-        echo ;;
-    *"system log"* )
-        echo "system log - print system console logs";;
-    *"system printenv"* )
-        echo "system printenv - print system environment variables" ;;
-    *"system setenv"* )
-        echo "system setenv - print system environment variables" ;;
-    *"system unsetenv"* )
-        echo "system setenv - print system environment variables" ;;
-    *"system power"* )
-        echo "system power cycle - power the system off, then on"
-        echo "system power halt - halt the system"
-        echo "system power off - power the system off"
-        echo "system power on - power the system on"
-        echo "system power status - print system power status"
-        echo ;;
-    *"system reset"* )
-        echo "system reset backup - reset the system using the backup firmware"
-        echo "system reset current - reset the system using the current firmware"
-        echo "system reset primary - reset the system using the primary firmware"
-        echo ;;
-    *"system forensics"* )
-        echo "system forensics show - show the system forensics configuration settins"
-        echo "system forensics log - display or clear system forensics logs"
-        echo ;;
-    *"system watchdog"* )
-        echo "system watchdog status - Display the system watchdog status"
-        echo ;;
-    *"system"* )
-        echo "system acp - acp related commands"
-        echo "system battery - battery related commands"
-        echo "system console - connect to the system console"
-        echo "system core - dump the system core and reset"
-        echo "system log - print system console log"
-        echo "system power - commands controlling system power"
-        echo "system reset - reset the system using the selected firmware"
-        echo "system sensors - print system sensors"
-        echo "system fru - fru related commands"
-        echo "system forensics - configure watchdog forensics collection settings"
-        echo "system watchdog - system watchdog commands"
-        # diag level commands
-        if [ "$priv_mode" == "diag" ];then 
-        echo "system printenv - print system environment variables"
-        echo "system unsetenv - unset system environment variables"
-        echo "system setenv - set system environment variables";fi 
-        echo ;;
-    *"version"* )
-        echo "version - print Service Processor version" ;;
-    *"help"* | "?"  )
-        echo "date - print date and time"
-        echo "exit - exit from the SP command line interface"
-        echo "events - print system events and event information"
-        echo "help - print command help"
-        [ "$priv_mode" == "diag" ] && echo "host - configure host"
-        echo "priv - show and set user mode"
-        echo "sp - commands to control the SP"
-        echo "system - commands to control the system"
-        echo "version - print Service Processor version"
-        echo ;;
-    * ) usage ;;
+  #trim help
+  cmd=$(echo $cmd | sed "s/^help //")
+
+  help_strings="
+    date - print date and time
+    events - print system events and event information
+    events all - print all system events
+    events info - print system event log information
+    events newest - print newest system events
+    events oldest - print oldest system events
+    events search - search for and print system events
+    exit - exit from the SP command line interface
+    help - print command help
+    priv - show and set user mode
+    priv set admin - enter into admin user mode
+    priv set -q admin - enter into admin user mode
+    priv set advanced - enter into advanced user mode
+    priv set -q advanced - enter into advanced user mode(quiet flag)
+    priv set diag - enter into diag user mode
+    priv set -q diag - enter into diag user mode(quiet flag)
+    priv show - show current user mode
+    priv set - set user mode
+    sp - commands to control the SP
+    sp reboot - reboot the SP
+    sp status - print SP status information
+    sp uptime - display the service processor uptime
+    system - commands to control the system
+    system acp - acp related commands
+    system acp show - display ACP info status
+    system acp sensors show - display expander sensors status
+    system battery - battery related commands
+    system battery show - display battery info status
+    system console - connect to the system console
+    system core - dump the system core and reset
+    system fru - fru related commands
+    system fru show - display fru id inventory data
+    system fru list - list fru id
+    system log - print system console logs
+    system power - commands controlling system power
+    system power cycle - power the system off, then on
+    system power halt - halt the system
+    system power off - power the system off
+    system power on - power the system on
+    system power status - print system power status
+    system sensors - print system sensors
+    system reset - reset the system using the selected firmware
+    system reset backup - reset the system using the backup firmware
+    system reset current - reset the system using the current firmware
+    system reset primary - reset the system using the primary firmware
+    system forensics - configure watchdog forensics collection settings
+    system forensics show - show the system forensics configuration settings
+    system forensics log - display or clear system forensics logs
+    system watchdog - system watchdog commands
+    system watchdog status - Display the system watchdog status
+    version - print Service Processor version
+    "
+  
+  if [ "$priv_mode" == "diag" ];then 
+    help_strings="
+      $help_strings
+      host - configure host
+      host network - host network related commands
+      host network setup - configure host networking
+      host network show - print host networking
+      host setup - configure host
+      host storage - host storage related commands
+      host storage setup - configure host storage
+      host storage show - print host storage
+      system printenv - print system environment variables
+      system setenv - print system environment variables
+      system setenv - print system environment variables
+    "
+  fi
+
+  case $cmd in 
+    "help" | "?"  )
+      # top level help
+      echo "$help_strings" | awk '{$1=$1};1' | grep -E "^\b\w+ -" 
+      echo 
+      ;;
+   * ) 
+      # Parental match
+      if [[ $(echo "$help_strings" | grep -E "\b$cmd \w+\b -" | wc -l) -gt 0 ]];then 
+        echo "$help_strings" | awk '{$1=$1};1' | grep -E "\b$cmd \w+\b - "
+        echo "$help_strings" | awk '{$1=$1};1' | grep -E "\b$cmd -q \w+\b - "
+        echo
+      else 
+        # exact match
+        echo "$help_strings" | awk '{$1=$1};1' | grep "^$cmd -"
+      fi         
+      ;;
   esac
 }
 
@@ -1278,6 +1029,7 @@ function enforce_priv_mode () {
     *"system setenv"*   ) if [ "$priv_mode" != "diag" ]; then cmd="unathorized";fi ;;
     *"system unsetenv"* ) if [ "$priv_mode" != "diag" ]; then cmd="unauthorized";fi ;;
     *"host setup"*      ) if [ "$priv_mode" != "diag" ]; then cmd="unauthorized";fi ;;
+    *"host network"*      ) if [ "$priv_mode" != "diag" ]; then cmd="unauthorized";fi ;;
   esac 
 }
 
@@ -1296,12 +1048,17 @@ function run_command () {
     "events search"* ) events_search ;;
     "events" | "events "* ) help ;;
     "exit" | "exit "* ) exit ;;
+    "help help" ) usage ;;
     "help" | "help "* | "?"  ) help ;;
     "host" ) help ;;
     "host setup" | "host setup all" ) host_setup_all ;;
     "host setup packages" ) host_setup_packages ;;
-    "host network setup" | "host setup network" ) host_setup_network ;;
-    "host storage setup" | "host setup storage" ) host_setup_storage ;;
+    "host network" ) help ;;
+    "host network setup" | "host setup network" ) host_network_setup ;;
+    "host network show" ) host_network_show ;;
+    "host storage" ) help ;;
+    "host storage setup" | "host setup storage" ) host_storage_setup ;;
+    "host storage show" ) host_storage_show ;;
     "priv set" | "priv set admin" | "priv set admin "* )
         priv_mode="admin"
         echo "Administrative commands"

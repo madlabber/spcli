@@ -16,6 +16,7 @@ chmod g+rw /opt/spcli/log/history
 chmod g+rw /opt/spcli/log/system_console
 
 # tools
+dnf install -y xpath
 dnf install -y mtools
 dnf install -y net-tools
 dnf install -y expect
