@@ -757,6 +757,10 @@ function system_fru_show () {
 }
 
 function system_fru_show_0 () {
+  if ! got_root;then 
+    sudo spcli system fru show 0
+    return 0
+  fi
   echo
   echo "'Controller' inventory data:"
   echo
