@@ -4,15 +4,11 @@ function init () {
 
   priv_mode="admin"
   system_console_log=/opt/spcli/log/system_console
-  touch $system_console_log
-  chmod g+rw /opt/spcli/log/system_console
 
   # enable history
   set -o history
   HISTFILE=/dev/null # will maintain our own history file
   spcli_history=/opt/spcli/log/history # will keep our own history here
-  touch $spcli_history
-  chmod g+rw /opt/spcli/log/history
 
   # find the virsh domain of the storage controller
   systemdisk="$(find /dev | grep _DataONTAPv.raw | grep -v mapper | grep -v by-id)"
@@ -23,6 +19,7 @@ function init () {
 
   if [ "$domain" == "" ];then 
     echo "WARNING: No Controller Detected"
+    priv_mode="diag"
     echo
   fi 
 
