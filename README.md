@@ -8,11 +8,11 @@ To install:
 
 for an interactive shell:
 
-    spcli
+    sudo spcli
 
 to run a command noninteractively:
 
-    spcli <command>
+    sudo spcli <command>
 
 Note:
 To allow a non-root user to use spcli, add them to the libvirt group first:
