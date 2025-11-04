@@ -25,7 +25,9 @@ function init () {
   fi 
 
   # detect unconfigured host
-  if [ "$(which virsh)" == "" ];then host_setup;fi
+  if [ "$(which virsh)" == "" ];then host_setup_all;fi
+  if [ "$(which ovs-vsctl)" == "" ];then host_setup_all;fi
+
 
   # start logging the system console
   if is_power_on; then log_system_console;fi
@@ -192,14 +194,18 @@ function log_system_console () {
 }
 
 function host_setup_all () {
-  echo 
-  host_setup_packages
-  host_storage_setup  
-  host_network_setup
+  if ! got_root;then 
+    spcli host setup
+  else
+    echo 
+    host_setup_packages
+    host_storage_setup  
+    host_network_setup
+  fi
 }
 
 # Ensure the script is run with root privileges
-function am_i_root (){
+function got_root (){
   if [ "$EUID" -ne 0 ]; then
     echo "This script must be run as root."
     return 1
