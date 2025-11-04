@@ -208,24 +208,24 @@ function am_i_root (){
 }
 
 # Function to convert netmask to CIDR prefix length
-netmask_to_cidr() {
-    local netmask="$1"
-    local cidr_prefix=0
+function netmask_to_cidr() {
+  local netmask="$1"
+  local cidr_prefix=0
 
-    # Split the netmask into octets
-    IFS='.' read -r -a octets <<< "$netmask"
+  # Split the netmask into octets
+  IFS='.' read -r -a octets <<< "$netmask"
 
-    # Iterate through each octet
-    for octet in "${octets[@]}"; do
-        # Convert the octet to its binary representation
-        local binary_octet=$(printf "%08d" "$(echo "obase=2; $octet" | bc)")
+  # Iterate through each octet
+  for octet in "${octets[@]}"; do
+      # Convert the octet to its binary representation
+      local binary_octet=$(printf "%08d" "$(echo "obase=2; $octet" | bc)")
 
-        # Count the number of '1's in the binary octet
-        local ones_in_octet=$(echo "$binary_octet" | grep -o '1' | wc -l)
-        cidr_prefix=$((cidr_prefix + ones_in_octet))
-    done
+      # Count the number of '1's in the binary octet
+      local ones_in_octet=$(echo "$binary_octet" | grep -o '1' | wc -l)
+      cidr_prefix=$((cidr_prefix + ones_in_octet))
+  done
 
-    echo "$cidr_prefix"
+  echo "$cidr_prefix"
 }
 
 function is_valid_ip () {
@@ -237,13 +237,13 @@ function is_valid_netmask () {
 }
 
 function validate_bond_ports () {
-for word in $1; do
-  if ! echo "$2" | grep -qw "$word"; then
-    return 1
-    break
-  fi
-done
-return 0
+  for word in $1; do
+    if ! echo "$2" | grep -qw "$word"; then
+      return 1
+      break
+    fi
+  done
+  return 0
 }
 
 function get_physical_network_interfaces () {
@@ -590,6 +590,14 @@ function host_setup_packages () {
 
   # Restart NetworkManager
   systemctl restart NetworkManager
+
+  # Enable root ssh 
+  sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/g' /etc/ssh/sshd_config
+  sed -i 's/PermitRootLogin no/PermitRootLogin yes/g' /etc/ssh/sshd_config
+
+  # Restart the SSH service to apply changes
+  systemctl restart sshd
+
 
 }
 
