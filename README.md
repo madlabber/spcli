@@ -3,7 +3,8 @@ An SP CLI for ONTAP Select on KVM
 
 To install:
 
-    sudo ./install.sh 
+    sudo git clone https://github.com/madlabber/spcli.git
+    sudo /opt/spcli/install.sh 
 
 for an interactive shell:
 
@@ -19,4 +20,4 @@ To allow a non-root user to use spcli, add them to the libvirt group first:
     sudo usermod -aG libvirt $USER
     newgrp libvirt
 
-Some functions require sudo or root group membership.
+Some functions still require sudo or root group membership.
