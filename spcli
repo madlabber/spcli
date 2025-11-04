@@ -195,7 +195,7 @@ function log_system_console () {
 
 function host_setup_all () {
   if ! got_root;then 
-    spcli host setup
+    sudo spcli host setup
   else
     echo 
     host_setup_packages
