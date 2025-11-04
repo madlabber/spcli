@@ -5,12 +5,14 @@ function init () {
   priv_mode="admin"
   system_console_log=/opt/spcli/log/system_console
   touch $system_console_log
+  chmod g+rw /opt/spcli/log/system_console
 
   # enable history
   set -o history
   HISTFILE=/dev/null # will maintain our own history file
   spcli_history=/opt/spcli/log/history # will keep our own history here
   touch $spcli_history
+  chmod g+rw /opt/spcli/log/history
 
   # find the virsh domain of the storage controller
   systemdisk="$(find /dev | grep _DataONTAPv.raw | grep -v mapper | grep -v by-id)"
@@ -196,12 +198,13 @@ function log_system_console () {
 function host_setup_all () {
   if ! got_root;then 
     sudo spcli host setup
-  else
-    echo 
-    host_setup_packages
-    host_storage_setup  
-    host_network_setup
+    return 0
   fi
+  echo 
+  host_setup_packages
+  host_storage_setup  
+  host_network_setup
+
 }
 
 # Ensure the script is run with root privileges
@@ -275,6 +278,11 @@ function get_physical_network_interfaces () {
 }
 
 function host_network_setup (){
+  if ! got_root;then 
+    sudo spcli host network setup
+    return 0
+  fi
+
   while true; do read -r -p "Configure Host Networking? (y/n): [ ] " choice
     case "$choice" in 
       y|Y ) break ;;
@@ -530,6 +538,11 @@ function host_network_show () {
 }
 
 function host_setup_packages () {
+  if ! got_root;then 
+    sudo spcli host setup packages
+    return 0
+  fi
+
   # install packages
   while true; do
     read -r -p "Install kvm and required packages? [y/n] " choice
@@ -608,6 +621,10 @@ function host_setup_packages () {
 }
 
 function host_storage_setup () {
+  if ! got_root;then 
+    sudo spcli host storage setup
+    return 0
+  fi
   # configure storage pool
   while true; do
     read -r -p "Configure Storage Pool? [y/n] " choice
