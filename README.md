@@ -1,5 +1,10 @@
 # spcli
-An SP CLI for ONTAP Select on KVM
+A Service-Processor-like CLI for ONTAP Select on KVM
+
+### About
+SPCLI implements much of the Service Processor Command Line Interface for an ONTAP Select kvm host.  SPCLI can be run as a command or as an interactive shell.  SPCLI can also be used to prepare a linux host for an ONTAP Select deployment.  
+
+
 
 To install:
 
@@ -21,3 +26,11 @@ To allow a non-root user to use spcli, add them to the libvirt group first:
     newgrp libvirt
 
 Some functions still require sudo or root group membership.
+
+### Preparing a host with SPCLI
+Invoke the host setup process:
+
+    sudo spcli host setup
+
+Then follow the prompts to install and configure host software packages, storage pool creation, and configure host networking.
+

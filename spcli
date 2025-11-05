@@ -1,6 +1,6 @@
 #!/bin/bash
 function init () {
-  spcli_version="0.03"
+  spcli_version="0.05"
 
   priv_mode="admin"
   system_console_log=/opt/spcli/log/system_console
@@ -198,7 +198,7 @@ function host_setup_all () {
     return 0
   fi
   echo 
-  host_setup_packages
+  host_software_setup
   host_storage_setup  
   host_network_setup
 
@@ -275,6 +275,11 @@ function get_physical_network_interfaces () {
 }
 
 function host_network_setup (){
+  if is_power_on; then
+    echo "error: system power is on"
+    return 0
+  fi
+
   if ! got_root;then 
     sudo spcli host network setup
     return 0
@@ -534,7 +539,24 @@ function host_network_show () {
   echo
 }
 
-function host_setup_packages () {
+function host_software_show () {
+  echo "SP CLI:              $spcli_version"
+  echo "Operating System:    $(cat /etc/os-release | grep PRETTY_NAME | cut -d'"' -f2)"
+  echo "fence-agents-all:   $(rpm -qi fence-agents-all | grep Version | cut -d: -f2)"
+  echo "libibverbs:         $(rpm -qi libibverbs | grep Version | cut -d: -f2)"
+  echo "libvirt:            $(rpm -qi libvirt | grep Version | cut -d: -f2)"
+  echo "lshw:               $(rpm -qi lshw | grep Version | cut -d: -f2)"
+  echo "lsof:               $(rpm -qi lsof | grep Version | cut -d: -f2)"
+  echo "lsscsi:             $(rpm -qi lsscsi | grep Version | cut -d: -f2)"
+  echo "NetworkManager-ovs: $(rpm -qi NetworkManager-ovs | grep Version | cut -d: -f2)"
+  echo "openvswitch:        $(ovs-vswitchd --version 2>/dev/null | head -n 1 | cut -d')' -f2)"
+  echo "qemu-kvm:           $(rpm -qi qemu-kvm | grep Version | cut -d: -f2)"
+  echo "telnet:             $(rpm -qi telnet | grep Version | cut -d: -f2)"
+  echo "virt-install:       $(rpm -qi virt-install | grep Version | cut -d: -f2)"
+  echo 
+}
+
+function host_software_setup () {
   if ! got_root;then 
     sudo spcli host setup packages
     return 0
@@ -542,54 +564,48 @@ function host_setup_packages () {
 
   # install packages
   while true; do
-    read -r -p "Install kvm and required packages? [y/n] " choice
+    read -r -p "Install kvm and required packages? (y/n): " choice
     case "$choice" in
       y|Y )
-          dnf install -y qemu-kvm libvirt virt-install lshw lsscsi lsof telnet libibverbs fence-agents-all
-          # Also listed as required in the docs but not really required
-          #   pacemaker-2.1.4-5
-          #   pcs-0.10.14-5
-          break
-          ;;
+            dnf install -y qemu-kvm libvirt virt-install lshw lsscsi lsof telnet libibverbs fence-agents-all
+            # Also listed as required in the docs but not really required
+            #   pacemaker-2.1.4-5
+            #   pcs-0.10.14-5
+            break ;;
       n|N ) break ;;
-        * ) echo "Invalid response: [ $choice ]." ;;
     esac
     echo
   done
 
   #install openvswitch from RDO
   while [[ "$(which ovs-vsctl)" == "" ]]; do
-    read -r -p "Install openvswitch from RDO? [y/n] " choice
+    read -r -p "Install openvswitch from RDO? (y/n): " choice
     case "$choice" in
       y|Y )
-          dnf install -y http://trunk.rdoproject.org/rdo_release/rdo-release.el9s.rpm
-          dnf install -y NetworkManager-ovs openvswitch
-          break
-          ;;
+            dnf install -y http://trunk.rdoproject.org/rdo_release/rdo-release.el9s.rpm
+            dnf install -y NetworkManager-ovs openvswitch
+            break ;;
       n|N ) break ;;
-        * ) echo "Invalid response: [ $choice ]." ;;
     esac
     echo
   done
 
   #install openvswitch from NVF
   while [[ "$(which ovs-vsctl)" == "" ]]; do
-    read -r -p "Install openvswitch from NFV? [y/n] " choice
+    read -r -p "Install openvswitch from NFV? (y/n): " choice
     case "$choice" in
       y|Y )
-          dnf install -y centos-release-nfv-common centos-release-nfv-openvswitch
-          dnf install -y NetworkManager-ovs openvswitch3.5
-          break
-          ;;
+            dnf install -y centos-release-nfv-common centos-release-nfv-openvswitch
+            dnf install -y NetworkManager-ovs openvswitch3.5
+            break ;;
       n|N ) break ;;
-        * ) echo "Invalid response: [ $choice ]." ;;
     esac
     echo
   done
 
   # Set qemu user and group
-  sed -i 's/^#user =.*/user = "root"/' /etc/libvirt/qemu.conf
-  sed -i 's/^#group =.*/group = "root"/' /etc/libvirt/qemu.conf
+  #sed -i 's/^#user =.*/user = "root"/' /etc/libvirt/qemu.conf
+  #sed -i 's/^#group =.*/group = "root"/' /etc/libvirt/qemu.conf
 
   # start and enable libvirtd
   systemctl enable libvirtd --now
@@ -614,7 +630,6 @@ function host_setup_packages () {
   # Restart the SSH service to apply changes
   systemctl restart sshd
 
-
 }
 
 function host_storage_setup () {
@@ -622,48 +637,64 @@ function host_storage_setup () {
     sudo spcli host storage setup
     return 0
   fi
-  # configure storage pool
-  while true; do
-    read -r -p "Configure Storage Pool? [y/n] " choice
-    case "$choice" in
-      y|Y )
-          read -p "Storage pool name: [select_pool] " pool_name
-          pool_name=${pool_name:-"select_pool"}
-          echo 
-          echo "Discovered block devices:"
-          lsblk --list | grep -v lvm
-          read -p "Storage pool block device: [$pool_device] " pool_device
-          if [ "$pool_name" != "" ] && [ "$pool_device" != "" ];then 
-            while true; do
-              read -r -p "Storage pool [$pool_name] will be created on device [$pool_device]. Continue? [y/n] " choice
-              case "$choice" in
-                y|Y ) 
-                      # Create the storage pool
-                      if [ "$(virsh pool-list --name --all | grep $pool_name)" == "" ];then
-                        virsh pool-define-as "$pool_name" logical --source-dev /dev/$pool_device --target=/dev/$pool_name
-                      fi
-                      if [ "$(virsh pool-list --name | grep $pool_name)" == "" ];then
-                        virsh pool-build "$pool_name"
-                        virsh pool-start "$pool_name"
-                      fi
-                      virsh pool-autostart "$pool_name"
-                      if [ "$(virsh vol-list --pool select_pool | grep keepalive)" == "" ];then 
-                        virsh vol-create-as --pool "$pool_name" --name keepalive --capacity 1g
-                      fi
-                      break ;;
-                n|N ) break ;;
-                  * ) echo "Invalid response: [ $choice ]." ;;
-              esac
-            done
-            break
-          else
-            echo "Storage pool creation cancelled.  Pool: $pool_name, Device: $pool_device"
-          fi
-          ;;
-        n|N ) break ;;
-          * ) echo "Invalid response: [ $choice ]." ;;
-      esac
-    done
+
+  while true; do read -r -p "Configure Host Storage? [y/n] " choice
+    case "$choice" in 
+      y|Y ) break ;;
+      n|N ) return 1; break ;;
+    esac
+  done
+
+  # if a storage pool exists use it by default
+  default_pool_name=$(virsh pool-list --all --name | head -n 1 | cut -d' ' -f1)
+
+  #otherwise default to "select_pool"
+  default_pool_name=${default_pool_name:-"select_pool"}
+
+  # ask the user
+  read -p "Storage pool name: [$default_pool_name] " pool_name
+    pool_name=${pool_name:-"$default_pool_name"}
+
+  # if the pool exists and has a device then use that
+  pool_device=$(virsh pool-dumpxml "$pool_name" | grep "device path" | cut -d\' -f2 | rev | cut -d/ -f1 |rev)
+  if [ "$pool_device" != "" ];then
+    echo "Storage pool block device: [$pool_device] "
+  else # ask the user
+    echo
+    echo "Discovered block devices:"
+    lsblk --list | grep -v lvm
+    read -p "Storage pool block device: [$pool_device] " pool_device
+    # TODO: input validation
+  fi
+
+  while true; do read -r -p "Create storage pool: $pool_name on device: $pool_device? [y/n] " choice
+    case "$choice" in 
+      y|Y ) break ;;
+      n|N ) return 1; break ;;
+    esac
+  done
+
+  if [ "$pool_name" != "" ] && [ "$pool_device" != "" ];then 
+    # Create the storage pool
+    if [ "$(virsh pool-list --name --all | grep $pool_name)" == "" ];then
+      virsh pool-define-as "$pool_name" logical --source-dev /dev/$pool_device --target=/dev/$pool_name
+    fi
+
+    # build and start the storage pool
+    if [ "$(virsh pool-list --name | grep $pool_name)" == "" ];then
+      virsh pool-build "$pool_name"
+      virsh pool-start "$pool_name"
+    fi
+
+    # autostart the storage pool
+    virsh pool-autostart "$pool_name"
+
+    # create an empty volume to prevent the storage pool from stopping
+    if [ "$(virsh vol-list --pool select_pool | grep keepalive)" == "" ];then 
+      virsh vol-create-as --pool "$pool_name" --name keepalive --capacity 1g
+    fi
+
+  fi 
 
 }
 
@@ -697,6 +728,30 @@ function host_storage_show () {
   echo 
   echo "Storage Devices:"
   lsblk --list | grep -v lvm
+}
+
+function priv_set () {
+  case $cmd in 
+    "priv set admin"         ) priv_mode="admin"; echo "Administrative commands"; echo ;;
+    "priv set admin "*       ) priv_mode="admin"; echo "Administrative commands"; echo ;;
+    "priv set -q admin"      ) priv_mode="admin" ;;
+    "priv set -q admin "*    ) priv_mode="admin" ;;
+    "priv set -q advanced"   ) priv_mode="advanced" ;;
+    "priv set -q advanced "* ) priv_mode="advanced" ;;
+    "priv set -q diag"       ) priv_mode="diag" ;;
+    "priv set -q diag "*     ) priv_mode="diag" ;;
+    "priv set advanced" | "priv set advanced "* )
+        priv_mode="advanced"
+        echo "Warning: These advanced commands are potentially dangerous; use them only when directed to do so by support personnel."
+        echo ;;
+    "priv set diag" | "priv set diag "* )
+        priv_mode="diag"
+        echo "Warning: These diagnostic commands are for use by support personnel only."
+        echo ;;
+    "priv set"    ) priv_mode="admin"; echo "Administrative commands"; echo ;;
+    * ) help "priv set" ;;
+  esac 
+
 }
 
 # This just reloads the spcli script
@@ -944,26 +999,39 @@ function system_reset_primary () {
 }
 
 function usage () {
+  if [ "$1" != "" ];then cmd="$1";fi
+
   case $cmd in 
-    "date"*            ) echo "usage: date";;
-    "events all"*      ) echo "usage: events all";;
-    "events info"*     ) echo "usage: events info";;
-    "events newest"*   ) echo "usage: events newest <number>" ;;
-    "events oldest"*   ) echo "usage: events oldest <number>" ;;
-    "events search"*   ) echo "usage: events search <string>" ;;
-    "help"*            ) echo "usage: help [<command>]" ;;
-    "system fru list"* ) echo "usage: system fru list" ;;
-    "system fru show"* ) echo "usage: system fru show <FRU-ID>" ;;
-    "system setenv"*   ) echo "usage: system setenv <key>=<value>" ;;
-    "system unsetenv"* ) echo "usage: system unsetenv <key>" ;;
-    "system log"*      ) echo "usage: system log [-a] [-p <page_size>] [-l <log_number>]" ;;
+    "date"*                    ) echo "usage: date";;
+    "events all"*              ) echo "usage: events all";;
+    "events info"*             ) echo "usage: events info";;
+    "events newest"*           ) echo "usage: events newest <number>" ;;
+    "events oldest"*           ) echo "usage: events oldest <number>" ;;
+    "events search"*           ) echo "usage: events search <string>" ;;
+    "help"*                    ) echo "usage: help [<command>]" ;;
+    "sp uptime"*               ) echo "usage: sp uptime" ;;
+    "system acp sensors show"* ) echo "usage: system acp sensors show" ;;
+    "system battery show"*     ) echo "usage: system battery show" ;;
+    "system fru list"*         ) echo "usage: system fru list" ;;
+    "system fru show"*         ) echo "usage: system fru show <FRU-ID>" ;;
+    "system power on"*         ) echo "usage: system power on" ;;
+    "system power status"*     ) echo "usage: system power status" ;;
+    "system setenv"*           ) echo "usage: system setenv <key>=<value>" ;;
+    "system unsetenv"*         ) echo "usage: system unsetenv <key>" ;;
+    "system log"*              ) echo "usage: system log [-a] [-p <page_size>] [-l <log_number>]" ;;
+    "version"*                 ) echo "usage: version" ;;
   esac
 }
 
 function help (){
-  #trim help
-  cmd=$(echo $cmd | sed "s/^help //")
 
+  # accept args
+  if [ "$1" != "" ];then cmd="$1";fi
+
+  #trim help prefix
+  cmd=$(echo $cmd | sed "s/^help //") 
+
+  # administrative level commands
   help_strings="
     date - print date and time
     events - print system events and event information
@@ -1006,6 +1074,7 @@ function help (){
     system power on - power the system on
     system power status - print system power status
     system sensors - print system sensors
+    system sensors show - print system sensors
     system reset - reset the system using the selected firmware
     system reset backup - reset the system using the backup firmware
     system reset current - reset the system using the current firmware
@@ -1013,11 +1082,14 @@ function help (){
     system forensics - configure watchdog forensics collection settings
     system forensics show - show the system forensics configuration settings
     system forensics log - display or clear system forensics logs
+    system forensics log dump - dump system forensics logs
+    system forensics log clear - clear system forensics log
     system watchdog - system watchdog commands
     system watchdog status - Display the system watchdog status
     version - print Service Processor version
     "
   
+  # diagnostic level commands
   if [ "$priv_mode" == "diag" ];then 
     help_strings="
       $help_strings
@@ -1025,6 +1097,9 @@ function help (){
       host network - host network related commands
       host network setup - configure host networking
       host network show - print host networking
+      host software - host software related commands
+      host software show - print host software versions
+      host software setup - install and configure host software
       host setup - configure host
       host storage - host storage related commands
       host storage setup - configure host storage
@@ -1035,24 +1110,27 @@ function help (){
     "
   fi
 
-  case $cmd in 
-    "help" | "?"  )
-      # top level help
-      echo "$help_strings" | awk '{$1=$1};1' | grep -E "^\b\w+ -" 
-      echo 
-      ;;
-   * ) 
-      # Parental match
-      if [[ $(echo "$help_strings" | grep -E "\b$cmd \w+\b -" | wc -l) -gt 0 ]];then 
-        echo "$help_strings" | awk '{$1=$1};1' | grep -E "\b$cmd \w+\b - "
-        echo "$help_strings" | awk '{$1=$1};1' | grep -E "\b$cmd -q \w+\b - "
-        echo
-      else 
-        # exact match
-        echo "$help_strings" | awk '{$1=$1};1' | grep "^$cmd -"
-      fi         
-      ;;
-  esac
+  # top level help
+  if [[ "$cmd" == "?" ]];then 
+    echo "$help_strings" | awk '{$1=$1};1' | grep -E "^\b\w+ -" 
+    echo
+  # this one is a special case
+  elif [[ "$cmd" == "priv set" ]];then 
+    echo "$help_strings" | grep "priv set" | grep -v "priv set - "
+    echo 
+  # Parental match
+  elif [[ $(echo "$help_strings" | grep -E "\b$cmd \w+\b -" | wc -l) -gt 0 ]];then 
+    echo "$help_strings" | awk '{$1=$1};1' | grep -E "\b$cmd \w+\b - "
+    # echo "$help_strings" | awk '{$1=$1};1' | grep -E "\b$cmd -q \w+\b - "
+    echo
+  # exact match
+  elif [[ $(echo "$help_strings" | awk '{$1=$1};1' | grep "^$cmd -" | wc -l) -gt 0 ]];then 
+    echo "$help_strings" | awk '{$1=$1};1' | grep "^$cmd -"
+  # No match
+  else 
+    usage "help"
+  fi         
+  # echo "cmd: $cmd"
 }
 
 function enforce_priv_mode () {
@@ -1061,11 +1139,18 @@ function enforce_priv_mode () {
     *"system setenv"*   ) if [ "$priv_mode" != "diag" ]; then cmd="unathorized";fi ;;
     *"system unsetenv"* ) if [ "$priv_mode" != "diag" ]; then cmd="unauthorized";fi ;;
     *"host setup"*      ) if [ "$priv_mode" != "diag" ]; then cmd="unauthorized";fi ;;
-    *"host network"*      ) if [ "$priv_mode" != "diag" ]; then cmd="unauthorized";fi ;;
+    *"host network"*    ) if [ "$priv_mode" != "diag" ]; then cmd="unauthorized";fi ;;
+    *"host software"*   ) if [ "$priv_mode" != "diag" ]; then cmd="unauthorized";fi ;;
   esac 
 }
 
 function run_command () {
+  # accept args
+  if [ "$1" != "" ];then cmd="$1";fi
+
+  # replace help with ?
+  cmd=$(echo $cmd | sed "s/^help /? /") 
+
   # process command
   case $cmd in
     ""     ) ;;
@@ -1078,73 +1163,140 @@ function run_command () {
     "events newest"* ) events_newest ;;
     "events oldest"* ) events_oldest ;;
     "events search"* ) events_search ;;
-    "events" | "events "* ) help ;;
-    "exit" | "exit "* ) exit ;;
-    "help help" ) usage ;;
-    "help" | "help "* | "?"  ) help ;;
+    "events"   ) help "events" ;;
+    "events "* ) help "events" ;;
+    "exit"   ) exit ;;
+    "exit "* ) exit ;;
     "host" ) help ;;
-    "host setup" | "host setup all" ) host_setup_all ;;
-    "host setup packages" ) host_setup_packages ;;
-    "host network" ) help ;;
-    "host network setup" | "host setup network" ) host_network_setup ;;
-    "host network show" ) host_network_show ;;
-    "host storage" ) help ;;
-    "host storage setup" | "host setup storage" ) host_storage_setup ;;
-    "host storage show" ) host_storage_show ;;
-    "priv set" | "priv set admin" | "priv set admin "* )
-        priv_mode="admin"
-        echo "Administrative commands"
-        echo ;;
-    "priv set -q admin" | "priv set -q admin "* )
-        priv_mode="admin"
-        ;;
-    "priv set advanced" | "priv set advanced "* )
-        priv_mode="advanced"
-        echo "Warning: These advanced commands are potentially dangerous; use them only when directed to do so by support personnel."
-        echo ;;
-    "priv set -q advanced" | "priv set -q advanced "* ) priv_mode="advanced" ;;
-    "priv set diag" | "priv set diag "* )
-        priv_mode="diag"
-        echo "Warning: These diagnostic commands are for use by support personnel only."
-        echo ;;
-    "priv set -q diag" | "priv set -q diag "* ) priv_mode="diag" ;;
-    "priv show" | "priv" | "priv show "* ) 
-        echo "$priv_mode"
-        echo ;;
-    "priv set"* ) help ;;
-    "sp reboot" ) sp_reboot ;;
-    "sp status" ) sp_status ;;
-    "sp uptime" ) uptime ;;
-    "sp" | "sp "* ) help ;;
+    "host setup" ) host_setup_all ;;
+    "host setup packages" ) host_software_setup ;;
+    "host software show" ) host_software_show ;;
+    "host software setup" ) host_software_setup ;;
+    "host network"       ) help ;;
+    "host network setup" ) host_network_setup ;;
+    "host network show"  ) host_network_show ;;
+    "host network "*     ) help "host network" ;;
+    "host storage"       ) help ;;
+    "host storage setup" ) host_storage_setup ;;
+    "host storage show"  ) host_storage_show ;;
+    "priv set"    ) priv_set ;;
+    "priv set "*  ) priv_set ;;
+    "priv show"   ) echo "$priv_mode"; echo ;;
+    "priv show "* ) echo "$priv_mode"; echo ;;
+    "priv"        ) echo "$priv_mode"; echo ;;
+    "priv "*      ) help "priv" ;;
+    "sp reboot"   ) sp_reboot ;;
+    "sp reboot "* ) sp_reboot ;; # mimic real SP
+    "sp status"   ) sp_status ;; # real SP accepts -v (verbos) and -d (debug) flags
+    "sp status "* ) help "sp status" ;;
+    "sp uptime"   ) uptime ;;
+    "sp uptime "* ) usage "sp uptime" ;;
+    "sp"          ) help "sp" ;;
+    "sp "*        ) help "sp" ;;
     "system acp show" ) echo "ACP is not available" ;;
     "system acp sensors show" ) echo "ACP is not available" ;;
-    "system battery show" ) upower -i `upower -e | grep 'BAT'` ;;
-    "system console" ) system_console ;;
-    "system core" ) system_core ;;
-    "system fru list" ) system_fru_list ;;
+    "system acp sensors show "* ) usage ;;
+    "system acp"   ) help "system acp show"; help "system acp sensors show";echo ;;
+    "system acp "* ) help "system acp show"; help "system acp sensors show";echo ;;
+    "system battery show"   ) upower -i `upower -e | grep 'BAT'` ;;
+    "system battery show "* ) usage ;;
+    "system battery"   ) help "system battery" ;;
+    "system battery "* ) help "system battery" ;;
+    "system console"   ) system_console ;;
+    "system console "* ) system_console ;;
+    "system core"   ) system_core ;;
+    "system core "* ) system_core ;;
+    "system fru list"   ) system_fru_list ;;
     "system fru list "* ) usage ;;
     "system fru show"* ) system_fru_show ;;
-    "system log" | "system log "* ) system_log ;; # | more -d -n 10 
+    "system fru"   ) help "system fru" ;;
+    "system fru "* ) help "system fru" ;;
+    "system log"   ) system_log ;;
+    "system log "* ) system_log ;;
     "system power cycle" ) system_power_cycle ;;
+    "system power cycle "* ) system_power_cycle ;;
     "system power halt" ) virsh --connect qemu:///system shutdown "$domain";;
+    "system power halt "* ) help "system power halt" ;;
     "system power off" ) system_power_off ;;
+    "system power off "* ) system_power_off ;;
     "system power on" ) system_power_on ;;
+    "system power on "* ) usage ;;
     "system power status" ) system_power_status ;;
+    "system power status "* ) usage ;;
+    "system power" ) help "system power" ;;
+    "system power "* ) help "system power" ;;
     "system printenv" | "system printenv "* ) printenv "$(echo $cmd | cut -d' ' -f3-)" ;;
     "system getenv" | "system getenv "* ) getenv "$(echo $cmd | cut -d' ' -f3-)" ;;
+    "system setenv"   ) usage ;;
     "system setenv "* ) setenv "$(echo $cmd | cut -d' ' -f3)" "$(echo $cmd | cut -d' ' -f4)"; echo $cmd | cut -d' ' -f4 ;;
-    "system setenv" ) usage ;;
+    "system unsetenv"   ) usage ;;
     "system unsetenv "* ) unsetenv "$(echo $cmd | cut -d' ' -f3)" ;;
-    "system unsetenv" ) usage ;;
-    "system reset" ) system_reset ;;
-    "system reset backup" ) system_reset_backup ;;
-    "system reset current" ) system_reset_current ;;
-    "system reset primary" ) system_reset_primary ;;
-    "system sensors" ) sensors ;;
-    "system forensics show" ) echo "Forensics enabled: false"; echo;;
+    "system reset backup"    ) system_reset_backup ;;
+    "system reset backup "*  ) system_reset_backup ;;
+    "system reset current"   ) system_reset_current ;;
+    "system reset current "* ) system_reset_current ;;
+    "system reset primary"   ) system_reset_primary ;;
+    "system reset primary "* ) system_reset_primary ;;
+    "system reset"           ) system_reset ;;
+    "system reset "*         ) help "system reset" ;;
+    "system sensors show"   ) sensors ;;
+    "system sensors show "* ) sensors ;;
+    "system sensors"        ) sensors ;;
+    "system sensors "*      ) help "system sensors" ;;
+    "system forensics show"        ) echo "Forensics enabled: false"; echo;;
+    "system forensics show "*      ) echo "usage: system forensics show";;
+    "system forensics log dump"    ) echo "No forensics logs are available" ;;
+    "system forensics log dump "*  ) echo "usage: system forensics log dump" ;;
+    "system forensics log clear"   ) ;;
+    "system forensics log clear "* ) echo "usage: system forensics log clear" ;;
+    "system forensics log"         ) help "system forensics log" ;;
+    "system forensics log "*       ) help "system forensics log" ;;
+    "system forensics"             ) help "system forensics" ;;
+    "system forensics "*           ) help "system forensics" ;;
     "system watchdog status" ) virsh --connect qemu:///system dumpxml "$domain" | grep watchdog ;;
-    "system"* ) help ;;
-    "version" ) echo "SP CLI for ONTAP Select version $spcli_version" ;;
+    "system watchdog"   ) help "system watchdog" ;;
+    "system watchdog "* ) help "system watchdog" ;;
+    "system"   ) help "system" ;;
+    "system "* ) help "system";;
+    "version"   ) echo "SP CLI for ONTAP Select version: $spcli_version"
+                  echo "Host OS:      $(cat /etc/os-release | grep PRETTY_NAME | cut -d'"' -f2)"
+                  echo "Open vSwitch:$(ovs-vswitchd --version 2>/dev/null | head -n 1 | cut -d')' -f2)"
+                  echo "qemu-kvm:    $(rpm -qi qemu-kvm | grep Version | cut -d: -f2)" ;;
+    "version "* ) usage ;;
+
+    # Parse help related commands
+    "?" ) help "?" ;;
+    "? ?" ) ;;
+    "? help" | "? help "* ) help "help" ;;
+    "? date" | "? date "* ) help "date" ;;
+    "? exit" | "? exit "* ) help "exit" ;;
+    "? priv show" | "? priv show "* ) help "priv show" ;;
+    "? priv set admin" | "? priv set admin "* ) help "priv set admin" ;;
+    "? priv set advanced" | "? priv set advanced "* ) help "priv set advanced" ;;
+    "? priv set diag" | "? priv set diag "* ) help "priv set diag" ;;
+    "? priv set" | "? priv set "* ) help "priv set" ;;
+    "? priv" ) help "priv" ;;
+    "? sp uptime" | "? sp uptime "* ) help "sp uptime" ;;
+    "? sp reboot" | "? sp reboot "* ) help "sp reboot" ;;
+    "? system acp show" | "? system acp show "* ) help "system acp show" ;;
+    "? system console" | "? system console "* ) help "system console" ;;
+    "? system core" | "? system core "* ) help "system core" ;;
+    "? system forensics log clear" | "? system forensics log clear "* ) help "system forensics log clear" ;;
+    "? system forensics log dump" | "? system forensics log dump "* ) help "system forensics log dump" ;;
+    "? system forensics log" | "? system forensics log "* ) help "system forensics log" ;;
+    "? system log" | "? system log "* ) help "system log" ;;
+    "? system power cycle" | "? system power cycle "* ) help "system power cycle" ;;
+    "? system power off" | "? system power off "* ) help "system power off" ;;
+    "? system power on" | "? system power on "* ) help "system power on" ;;
+    "? system power status" | "? system power status "* ) help "system power status" ;;
+    "? system reset backup" | "? system reset backup "* ) help "system reset backup" ;;
+    "? system reset current" | "? system reset current "* ) help "system reset current" ;;
+    "? system reset primary" | "? system reset primary "* ) help "system reset primary" ;;
+    "? version" | "? version "* ) help "version" ;;
+    #"? "*     ) help ;;
+    "? "* ) 
+        cmd=$(echo $cmd | sed "s/^? //") 
+        run_command "$cmd " ;;
     * ) echo "command not found. Type '?' for a list of available commands."
   esac
 }
@@ -1156,6 +1308,7 @@ function main () {
   # if a command was passed as an argument, run it then exit.
   if [ "$*" != "" ]; then 
     cmd="$*"
+    priv_mode="diag"
     run_command
     exit
   fi
