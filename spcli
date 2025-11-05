@@ -1,4 +1,8 @@
 #!/bin/bash
+
+# Internal functions
+####################
+
 function init () {
   spcli_version="0.05"
 
@@ -76,9 +80,80 @@ function get_host_mgmt_network () {
 
 }
 
+function get_physical_network_interfaces () {
+  interface_list=""
+  # Iterate through each network interface in /sys/class/net/
+  for interface in /sys/class/net/*; do
+      # Extract the interface name (e.g., eth0, enp0s3)
+      ifname=$(basename "$interface")
+
+      # Check if the 'device' subdirectory exists, which typically indicates a physical device
+      if [ -d "$interface/device" ]; then
+          # Exclude loopback interface (lo)
+          if [ "$ifname" != "lo" ]; then
+              # Further check for virtual functions (e.g., virtfn0) to exclude some virtual interfaces
+              # This is a heuristic and might need adjustment based on specific virtual setups
+              if ! ls "$interface/device/" | grep -q "virtfn"; then
+                  interface_list="$ifname $interface_list"
+              fi
+          fi
+      fi
+  done
+  echo "$interface_list"
+}
+
+function getenv () {
+  extractenv
+  if [ "$1" != "" ];then
+    cat $env | grep setenv | sort | sed 's^setenv ^^' | sed 's^ ^=^' | sed 's^"^^g' | grep "$1=" | cut -d= -f2
+  fi 
+}
+
+function got_root (){
+  if [ "$EUID" -ne 0 ]; then
+    echo "This command must be run as root."
+    return 1
+  fi
+  return 0
+}
+
 function injectenv () {
   offset="$(fdisk -l $systemdisk | grep FAT32 | tr -s ' ' | cut -d' ' -f2)s"
   mcopy -o -i $systemdisk@@$offset $env ::env/env 
+}
+
+function is_controller_installed () {
+  if [ "$domain" == "" ];then
+    echo "error: controller is not installed"
+    return 1
+  else
+    return 0
+  fi
+}
+
+function is_power_on () {
+  if [ "$(virsh --connect qemu:///system domstate $domain 2>/dev/null)" == "running" ]; then return 0; fi
+  return 1
+}
+
+function netmask_to_cidr() {
+  local netmask="$1"
+  local cidr_prefix=0
+
+  # Split the netmask into octets
+  IFS='.' read -r -a octets <<< "$netmask"
+
+  # Iterate through each octet
+  for octet in "${octets[@]}"; do
+      # Convert the octet to its binary representation
+      local binary_octet=$(printf "%08d" "$(echo "obase=2; $octet" | bc)")
+
+      # Count the number of '1's in the binary octet
+      local ones_in_octet=$(echo "$binary_octet" | grep -o '1' | wc -l)
+      cidr_prefix=$((cidr_prefix + ones_in_octet))
+  done
+
+  echo "$cidr_prefix"
 }
 
 function printenv () {
@@ -87,13 +162,6 @@ function printenv () {
     cat $env | grep setenv | sort | sed 's^setenv ^^' | sed 's^ ^=^' | sed 's^"^^g' 
   else 
     cat $env | grep setenv | sort | sed 's^setenv ^^' | sed 's^ ^=^' | sed 's^"^^g' | grep "$1="
-  fi 
-}
-
-function getenv () {
-  extractenv
-  if [ "$1" != "" ];then
-    cat $env | grep setenv | sort | sed 's^setenv ^^' | sed 's^ ^=^' | sed 's^"^^g' | grep "$1=" | cut -d= -f2
   fi 
 }
 
@@ -137,10 +205,8 @@ function unsetenv () {
   fi
 }
 
-function is_power_on () {
-  if [ "$(virsh --connect qemu:///system domstate $domain 2>/dev/null)" == "running" ]; then return 0; fi
-  return 1
-}
+# Command functions
+###################
 
 function events_info () {
     echo "Number of records: $(journalctl | wc -l)"
@@ -204,36 +270,6 @@ function host_setup_all () {
 
 }
 
-# Ensure the script is run with root privileges
-function got_root (){
-  if [ "$EUID" -ne 0 ]; then
-    echo "This command must be run as root."
-    return 1
-  fi
-  return 0
-}
-
-# Function to convert netmask to CIDR prefix length
-function netmask_to_cidr() {
-  local netmask="$1"
-  local cidr_prefix=0
-
-  # Split the netmask into octets
-  IFS='.' read -r -a octets <<< "$netmask"
-
-  # Iterate through each octet
-  for octet in "${octets[@]}"; do
-      # Convert the octet to its binary representation
-      local binary_octet=$(printf "%08d" "$(echo "obase=2; $octet" | bc)")
-
-      # Count the number of '1's in the binary octet
-      local ones_in_octet=$(echo "$binary_octet" | grep -o '1' | wc -l)
-      cidr_prefix=$((cidr_prefix + ones_in_octet))
-  done
-
-  echo "$cidr_prefix"
-}
-
 function is_valid_ip () {
   echo "$1" | grep -qE "\b(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b"
 }
@@ -250,28 +286,6 @@ function validate_bond_ports () {
     fi
   done
   return 0
-}
-
-function get_physical_network_interfaces () {
-  interface_list=""
-  # Iterate through each network interface in /sys/class/net/
-  for interface in /sys/class/net/*; do
-      # Extract the interface name (e.g., eth0, enp0s3)
-      ifname=$(basename "$interface")
-
-      # Check if the 'device' subdirectory exists, which typically indicates a physical device
-      if [ -d "$interface/device" ]; then
-          # Exclude loopback interface (lo)
-          if [ "$ifname" != "lo" ]; then
-              # Further check for virtual functions (e.g., virtfn0) to exclude some virtual interfaces
-              # This is a heuristic and might need adjustment based on specific virtual setups
-              if ! ls "$interface/device/" | grep -q "virtfn"; then
-                  interface_list="$ifname $interface_list"
-              fi
-          fi
-      fi
-  done
-  echo "$interface_list"
 }
 
 function host_network_setup (){
@@ -882,21 +896,18 @@ function system_log_filtered () {
   esac
 }
 
-# print both log 1 and log 2
 function system_log_all () {
   system_log_1
   echo
   system_log_2
 }
 
-# system log 1 should contain the loader stage of the most recent boot
 function system_log_1 () {
       echo "==================== Log #1 start"
       awk '/Loading kernel.../{f=1;s=""}f{s=s$0"\n"}END{printf "%s",s}' $system_console_log | awk '/---<<BOOT>>---/{exit} {print}'
       echo "==================== Log #1 end"
 }
 
-# system log 2 should contain everything after the loader stage of the most recent boot
 function system_log_2 () {
   echo "==================== Log #2 start"
   if [ "$(grep '\-\-\-<<BOOT>>---' $system_console_log)" == "" ];then 
@@ -997,6 +1008,9 @@ function system_reset_primary () {
   fi
   log_system_console
 }
+
+# Shell processing functions
+#############################
 
 function usage () {
   if [ "$1" != "" ];then cmd="$1";fi
