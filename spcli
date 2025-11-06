@@ -124,7 +124,8 @@ function injectenv () {
 
 function is_controller_installed () {
   if [ "$domain" == "" ];then
-    echo "error: controller is not installed"
+    echo "error: System controller is not installed"
+    echo
     return 1
   else
     return 0
@@ -299,7 +300,7 @@ function host_network_setup (){
     return 0
   fi
 
-  while true; do read -r -p "Configure Host Networking? (y/n): [ ] " choice
+  while true; do read -r -p "Configure Host Networking? [y/n] " choice
     case "$choice" in 
       y|Y ) break ;;
       n|N ) return 1; break ;;
@@ -448,7 +449,7 @@ function host_network_setup (){
 
             # create new bridge interface
             nmcli con add type ovs-interface slave-type ovs-port conn.interface "$bridge" master "$bridge_port" \
-                  ipv4.method disabled mtu "$bond_mtu" ipv6.addr-gen-mode 0 autoconnect yes 
+                  ipv4.method disabled ipv6.addr-gen-mode 0 autoconnect yes #mtu "$bond_mtu"
             
             # get bridge interface connection name
             bridge_interface=$(nmcli -t -f TYPE,DEVICE,NAME c | grep ovs-interface:br0 | cut -d: -f3)
@@ -792,6 +793,7 @@ function sp_status () {
 }
 
 function system_console () {
+  if ! is_controller_installed;then return 0;fi
   if is_power_on; then
     virsh --connect qemu:///system -e ^D console "$domain" --force | tee -a $system_console_log
     log_system_console
@@ -799,6 +801,7 @@ function system_console () {
 }
 
 function system_core () {
+  if ! is_controller_installed;then return 0;fi
   if confirm_dirty_shutdown; then 
     virsh --connect qemu:///system inject-nmi "$domain"
   fi
@@ -826,6 +829,8 @@ function system_fru_show () {
 }
 
 function system_fru_show_0 () {
+  if ! is_controller_installed;then return 0;fi
+
   if ! got_root;then 
     sudo spcli system fru show 0
     return 0
@@ -919,6 +924,8 @@ function system_log_2 () {
 }
 
 function system_power_cycle () {
+  if ! is_controller_installed;then return 0;fi
+
   if confirm_dirty_shutdown; then 
     if is_power_on; then 
       virsh --connect qemu:///system destroy "$domain" --graceful > /dev/null
@@ -930,10 +937,13 @@ function system_power_cycle () {
 }
 
 function system_power_halt () {
-    virsh --connect qemu:///system shutdown "$domain"
+  if ! is_controller_installed;then return 0;fi
+  virsh --connect qemu:///system shutdown "$domain"
 }
 
 function system_power_off () {
+  if ! is_controller_installed;then return 0;fi
+
   if confirm_dirty_shutdown; then 
     if is_power_on; then
       virsh --connect qemu:///system destroy "$domain" --graceful > /dev/null
@@ -943,14 +953,14 @@ function system_power_off () {
 }
 
 function system_power_on () {
-  if ! is_power_on; then
+  if is_controller_installed && ! is_power_on; then
     virsh --connect qemu:///system start $domain > /dev/null
     log_system_console
   fi
 }
 
 function system_power_status () {
-  if is_power_on; then
+  if is_controller_installed && is_power_on; then
     echo "System Power is on"
   else
     echo "System Power is off"
@@ -1044,6 +1054,9 @@ function help (){
 
   #trim help prefix
   cmd=$(echo $cmd | sed "s/^help //") 
+
+  #trim help prefix
+  cmd=$(echo $cmd | sed "s/^2/?/")
 
   # administrative level commands
   help_strings="
@@ -1165,82 +1178,97 @@ function run_command () {
   # replace help with ?
   cmd=$(echo $cmd | sed "s/^help /? /") 
 
+  # replace 2 with ?
+  cmd=$(echo $cmd | sed "s/^2/?/") 
+
   # process command
   case $cmd in
     ""     ) ;;
-    "date" ) date ;;
+    "date"   ) date ;;
     "date "* ) usage ;;
-    "events all" ) journalctl ;;
-    "events all "* ) usage ;;
-    "events info" ) events_info ;;
-    "events info "* ) usage;;
+    "events"         ) help ;;
+    "events all"     ) journalctl ;;
+    "events all "*   ) usage ;;
+    "events info"    ) events_info ;;
+    "events info "*  ) usage;;
     "events newest"* ) events_newest ;;
     "events oldest"* ) events_oldest ;;
     "events search"* ) events_search ;;
-    "events"   ) help "events" ;;
-    "events "* ) help "events" ;;
+    "events "*       ) help "events" ;;
     "exit"   ) exit ;;
     "exit "* ) exit ;;
-    "host" ) help ;;
-    "host setup" ) host_setup_all ;;
-    "host setup packages" ) host_software_setup ;;
-    "host software show" ) host_software_show ;;
-    "host software setup" ) host_software_setup ;;
-    "host network"       ) help ;;
-    "host network setup" ) host_network_setup ;;
-    "host network show"  ) host_network_show ;;
-    "host network "*     ) help "host network" ;;
-    "host storage"       ) help ;;
-    "host storage setup" ) host_storage_setup ;;
-    "host storage show"  ) host_storage_show ;;
+    "host"                  ) help ;;
+    "host setup"            ) host_setup_all ;;
+    "host setup "*          ) host_setup_all ;;
+    "host software"         ) help ;;
+    "host software show"    ) host_software_show ;;
+    "host software show "*  ) host_software_show ;;
+    "host software setup"   ) host_software_setup ;;
+    "host software setup "* ) host_software_setup ;;
+    "host software "*       ) help "host software";;
+    "host network"          ) help ;;
+    "host network setup"    ) host_network_setup ;;
+    "host network setup "*  ) host_network_setup ;;
+    "host network show"     ) host_network_show ;;
+    "host network show "*   ) host_network_show ;;
+    "host network "*        ) help "host network" ;;
+    "host storage"          ) help ;;
+    "host storage setup"    ) host_storage_setup ;;
+    "host storage show"     ) host_storage_show ;;
+    "host storage "*        ) help "host storage";;
+    "host "*                ) help "host" ;;
+    "priv"        ) echo "$priv_mode"; echo ;;
     "priv set"    ) priv_set ;;
     "priv set "*  ) priv_set ;;
     "priv show"   ) echo "$priv_mode"; echo ;;
     "priv show "* ) echo "$priv_mode"; echo ;;
-    "priv"        ) echo "$priv_mode"; echo ;;
     "priv "*      ) help "priv" ;;
+    "sp"          ) help "sp" ;;
     "sp reboot"   ) sp_reboot ;;
     "sp reboot "* ) sp_reboot ;; # mimic real SP
     "sp status"   ) sp_status ;; # real SP accepts -v (verbos) and -d (debug) flags
     "sp status "* ) help "sp status" ;;
     "sp uptime"   ) uptime ;;
     "sp uptime "* ) usage "sp uptime" ;;
-    "sp"          ) help "sp" ;;
     "sp "*        ) help "sp" ;;
+    "system"   ) help "system" ;;
+    "system acp"   ) help "system acp show"; help "system acp sensors show";echo ;;
     "system acp show" ) echo "ACP is not available" ;;
     "system acp sensors show" ) echo "ACP is not available" ;;
     "system acp sensors show "* ) usage ;;
-    "system acp"   ) help "system acp show"; help "system acp sensors show";echo ;;
     "system acp "* ) help "system acp show"; help "system acp sensors show";echo ;;
+    "system battery"   ) help "system battery" ;;
     "system battery show"   ) upower -i `upower -e | grep 'BAT'` ;;
     "system battery show "* ) usage ;;
-    "system battery"   ) help "system battery" ;;
     "system battery "* ) help "system battery" ;;
     "system console"   ) system_console ;;
     "system console "* ) system_console ;;
     "system core"   ) system_core ;;
     "system core "* ) system_core ;;
+    "system fru"   ) help "system fru" ;;
     "system fru list"   ) system_fru_list ;;
     "system fru list "* ) usage ;;
-    "system fru show"* ) system_fru_show ;;
-    "system fru"   ) help "system fru" ;;
+    "system fru show"   ) system_fru_show ;;
+    "system fru show "* ) system_fru_show ;;
     "system fru "* ) help "system fru" ;;
     "system log"   ) system_log ;;
     "system log "* ) system_log ;;
-    "system power cycle" ) system_power_cycle ;;
-    "system power cycle "* ) system_power_cycle ;;
-    "system power halt" ) virsh --connect qemu:///system shutdown "$domain";;
-    "system power halt "* ) help "system power halt" ;;
-    "system power off" ) system_power_off ;;
-    "system power off "* ) system_power_off ;;
-    "system power on" ) system_power_on ;;
-    "system power on "* ) usage ;;
-    "system power status" ) system_power_status ;;
+    "system power"          ) help ;;
+    "system power cycle"    ) system_power_cycle ;;
+    "system power cycle "*  ) system_power_cycle ;;
+    "system power halt"     ) virsh --connect qemu:///system shutdown "$domain";;
+    "system power halt "*   ) help "system power halt" ;;
+    "system power off"      ) system_power_off ;;
+    "system power off "*    ) system_power_off ;;
+    "system power on"       ) system_power_on ;;
+    "system power on "*     ) usage ;;
+    "system power status"   ) system_power_status ;;
     "system power status "* ) usage ;;
-    "system power" ) help "system power" ;;
-    "system power "* ) help "system power" ;;
-    "system printenv" | "system printenv "* ) printenv "$(echo $cmd | cut -d' ' -f3-)" ;;
-    "system getenv" | "system getenv "* ) getenv "$(echo $cmd | cut -d' ' -f3-)" ;;
+    "system power "*        ) help "system power" ;;
+    "system printenv"   ) printenv ;;
+    "system printenv "* ) printenv "$(echo $cmd | cut -d' ' -f3-)" ;;
+    "system getenv"   ) getenv "$(echo $cmd | cut -d' ' -f3-)" ;;
+    "system getenv "* ) getenv "$(echo $cmd | cut -d' ' -f3-)" ;;
     "system setenv"   ) usage ;;
     "system setenv "* ) setenv "$(echo $cmd | cut -d' ' -f3)" "$(echo $cmd | cut -d' ' -f4)"; echo $cmd | cut -d' ' -f4 ;;
     "system unsetenv"   ) usage ;;
@@ -1253,10 +1281,11 @@ function run_command () {
     "system reset primary "* ) system_reset_primary ;;
     "system reset"           ) system_reset ;;
     "system reset "*         ) help "system reset" ;;
+    "system sensors"        ) sensors ;;
     "system sensors show"   ) sensors ;;
     "system sensors show "* ) sensors ;;
-    "system sensors"        ) sensors ;;
     "system sensors "*      ) help "system sensors" ;;
+    "system forensics"             ) help "system forensics" ;;
     "system forensics show"        ) echo "Forensics enabled: false"; echo;;
     "system forensics show "*      ) echo "usage: system forensics show";;
     "system forensics log dump"    ) echo "No forensics logs are available" ;;
@@ -1265,12 +1294,10 @@ function run_command () {
     "system forensics log clear "* ) echo "usage: system forensics log clear" ;;
     "system forensics log"         ) help "system forensics log" ;;
     "system forensics log "*       ) help "system forensics log" ;;
-    "system forensics"             ) help "system forensics" ;;
     "system forensics "*           ) help "system forensics" ;;
+    "system watchdog"   ) help ;;
     "system watchdog status" ) virsh --connect qemu:///system dumpxml "$domain" | grep watchdog ;;
-    "system watchdog"   ) help "system watchdog" ;;
     "system watchdog "* ) help "system watchdog" ;;
-    "system"   ) help "system" ;;
     "system "* ) help "system";;
     "version"   ) echo "SP CLI for ONTAP Select version: $spcli_version"
                   echo "Host OS:      $(cat /etc/os-release | grep PRETTY_NAME | cut -d'"' -f2)"
