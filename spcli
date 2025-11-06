@@ -769,9 +769,9 @@ function priv_set () {
 
 }
 
-# This just reloads the spcli script
-# Does not reboot the host
 function sp_reboot () {
+  # This just reloads the spcli script
+  # Does not reboot the host
   if confirm_sp_reboot; then 
     echo
     spcli && exit
