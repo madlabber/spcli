@@ -1052,12 +1052,6 @@ function help (){
   # accept args
   if [ "$1" != "" ];then cmd="$1";fi
 
-  #trim help prefix
-  cmd=$(echo $cmd | sed "s/^help //") 
-
-  #trim help prefix
-  cmd=$(echo $cmd | sed "s/^2/?/")
-
   # administrative level commands
   help_strings="
     date - print date and time
@@ -1137,27 +1131,24 @@ function help (){
     "
   fi
 
-  # top level help
-  if [[ "$cmd" == "?" ]];then 
-    echo "$help_strings" | awk '{$1=$1};1' | grep -E "^\b\w+ -" 
-    echo
-  # this one is a special case
-  elif [[ "$cmd" == "priv set" ]];then 
-    echo "$help_strings" | grep "priv set" | grep -v "priv set - "
-    echo 
-  # Parental match
-  elif [[ $(echo "$help_strings" | grep -E "\b$cmd \w+\b -" | wc -l) -gt 0 ]];then 
-    echo "$help_strings" | awk '{$1=$1};1' | grep -E "\b$cmd \w+\b - "
-    # echo "$help_strings" | awk '{$1=$1};1' | grep -E "\b$cmd -q \w+\b - "
-    echo
-  # exact match
-  elif [[ $(echo "$help_strings" | awk '{$1=$1};1' | grep "^$cmd -" | wc -l) -gt 0 ]];then 
-    echo "$help_strings" | awk '{$1=$1};1' | grep "^$cmd -"
-  # No match
-  else 
-    usage "help"
-  fi         
-  # echo "cmd: $cmd"
+  # remove extra whitespace
+  help_strings=$(echo "$help_strings" | awk '{$1=$1};1' )
+
+  # match patterns
+  top_level_help=$(echo "$help_strings" | grep -E "^\b\w+ -")
+  parent_level_help=$(echo "$help_strings" | grep -E "\b$cmd \w+\b -")
+  command_level_help=$(echo "$help_strings" | grep "^$cmd -")
+  priv_set_help=$(echo "$help_strings" | grep "priv set" | grep -v "priv set - ")
+
+  # use cases
+  if   [[ "$cmd" == "?" ]];then echo "$top_level_help"; echo
+  elif [[ "$cmd" == "priv set" ]];then echo "$priv_set_help"; echo 
+  elif [[ "$parent_level_help" != "" ]];then echo "$parent_level_help"; echo
+  elif [[ "$command_level_help" != "" ]];then echo "$command_level_help" 
+  elif [[ "${cmd% *}" != "$cmd" ]];then help "${cmd% *}"
+  else usage "help"
+  fi   
+
 }
 
 function enforce_priv_mode () {
@@ -1176,7 +1167,7 @@ function run_command () {
   if [ "$1" != "" ];then cmd="$1";fi
 
   # replace help with ?
-  cmd=$(echo $cmd | sed "s/^help /? /") 
+  cmd=$(echo $cmd | sed "s/^help/?/") 
 
   # replace 2 with ?
   cmd=$(echo $cmd | sed "s/^2/?/") 
@@ -1184,6 +1175,9 @@ function run_command () {
   # process command
   case $cmd in
     ""     ) ;;
+    "?" ) help;;
+    "? ?" ) ;; # mimic a real SP quirk
+    "? "* ) help "$(echo $cmd | sed "s/^? //")" ;;
     "date"   ) date ;;
     "date "* ) usage ;;
     "events"         ) help ;;
@@ -1304,40 +1298,6 @@ function run_command () {
                   echo "Open vSwitch:$(ovs-vswitchd --version 2>/dev/null | head -n 1 | cut -d')' -f2)"
                   echo "qemu-kvm:    $(rpm -qi qemu-kvm | grep Version | cut -d: -f2)" ;;
     "version "* ) usage ;;
-
-    # Parse help related commands
-    "?" ) help "?" ;;
-    "? ?" ) ;;
-    "? help" | "? help "* ) help "help" ;;
-    "? date" | "? date "* ) help "date" ;;
-    "? exit" | "? exit "* ) help "exit" ;;
-    "? priv show" | "? priv show "* ) help "priv show" ;;
-    "? priv set admin" | "? priv set admin "* ) help "priv set admin" ;;
-    "? priv set advanced" | "? priv set advanced "* ) help "priv set advanced" ;;
-    "? priv set diag" | "? priv set diag "* ) help "priv set diag" ;;
-    "? priv set" | "? priv set "* ) help "priv set" ;;
-    "? priv" ) help "priv" ;;
-    "? sp uptime" | "? sp uptime "* ) help "sp uptime" ;;
-    "? sp reboot" | "? sp reboot "* ) help "sp reboot" ;;
-    "? system acp show" | "? system acp show "* ) help "system acp show" ;;
-    "? system console" | "? system console "* ) help "system console" ;;
-    "? system core" | "? system core "* ) help "system core" ;;
-    "? system forensics log clear" | "? system forensics log clear "* ) help "system forensics log clear" ;;
-    "? system forensics log dump" | "? system forensics log dump "* ) help "system forensics log dump" ;;
-    "? system forensics log" | "? system forensics log "* ) help "system forensics log" ;;
-    "? system log" | "? system log "* ) help "system log" ;;
-    "? system power cycle" | "? system power cycle "* ) help "system power cycle" ;;
-    "? system power off" | "? system power off "* ) help "system power off" ;;
-    "? system power on" | "? system power on "* ) help "system power on" ;;
-    "? system power status" | "? system power status "* ) help "system power status" ;;
-    "? system reset backup" | "? system reset backup "* ) help "system reset backup" ;;
-    "? system reset current" | "? system reset current "* ) help "system reset current" ;;
-    "? system reset primary" | "? system reset primary "* ) help "system reset primary" ;;
-    "? version" | "? version "* ) help "version" ;;
-    #"? "*     ) help ;;
-    "? "* ) 
-        cmd=$(echo $cmd | sed "s/^? //") 
-        run_command "$cmd " ;;
     * ) echo "command not found. Type '?' for a list of available commands."
   esac
 }
