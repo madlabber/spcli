@@ -742,7 +742,7 @@ function host_storage_show () {
   done
   echo 
   echo "Storage Devices:"
-  lsblk --list | grep -v lvm
+  lsblk --list | grep -v lvm | grep -v ^sr
 }
 
 function priv_set () {
@@ -781,15 +781,26 @@ function sp_reboot () {
 }
 
 function sp_status () {
-   get_host_mgmt_network
-   echo "SP CLI Version:       $spcli_version"
-   echo "Firmware Version:     $(cat /etc/os-release | grep PRETTY_NAME | cut -d'"' -f2)"
-   echo "Management port:      $mgmt_port"
-   echo "Ethernet link:        $mgmt_port_status"
-   echo "IPv4 configuration:"
-   echo "  IP Address:         $mgmt_ip"
-   echo "  Netmask:            $mgmt_netmask"
-   echo "  Gateway:            $(ip route | grep default | cut -d' ' -f 3)"
+  # allowed forms
+  case cmd in 
+    "sp status"    ) ;;
+    "sp status -v" ) ;;
+    "sp status -d" ) ;;
+    "sp status -v -d" ) ;;  
+    "sp status -d -v" ) ;;  
+    * ) usage; return 0 ;;
+  esac 
+
+  get_host_mgmt_network
+  echo "SP CLI Version:       $spcli_version"
+  echo "Firmware Version:     $(cat /etc/os-release | grep PRETTY_NAME | cut -d'"' -f2)"
+  echo "Management port:      $mgmt_port"
+  echo "Ethernet link:        $mgmt_port_status"
+  echo "IPv4 configuration:"
+  echo "  IP Address:         $mgmt_ip"
+  echo "  Netmask:            $mgmt_netmask"
+  echo "  Gateway:            $(ip route | grep default | cut -d' ' -f 3)"
+
 }
 
 function system_console () {
@@ -1033,6 +1044,7 @@ function usage () {
     "events oldest"*           ) echo "usage: events oldest <number>" ;;
     "events search"*           ) echo "usage: events search <string>" ;;
     "help"*                    ) echo "usage: help [<command>]" ;;
+    "sp status"*               ) echo "usage: sp status [-v] [-d]";;
     "sp uptime"*               ) echo "usage: sp uptime" ;;
     "system acp sensors show"* ) echo "usage: system acp sensors show" ;;
     "system battery show"*     ) echo "usage: system battery show" ;;
@@ -1221,7 +1233,7 @@ function run_command () {
     "sp reboot"   ) sp_reboot ;;
     "sp reboot "* ) sp_reboot ;; # mimic real SP
     "sp status"   ) sp_status ;; # real SP accepts -v (verbos) and -d (debug) flags
-    "sp status "* ) help "sp status" ;;
+    "sp status "* ) sp_status ;;
     "sp uptime"   ) uptime ;;
     "sp uptime "* ) usage "sp uptime" ;;
     "sp "*        ) help "sp" ;;
@@ -1242,6 +1254,10 @@ function run_command () {
     "system fru"   ) help "system fru" ;;
     "system fru list"   ) system_fru_list ;;
     "system fru list "* ) usage ;;
+    "system fru log"      ) help ;;
+    "system fru log show" ) ;;
+    "system fru log show "* ) ;;
+    "system fru log "*      ) help "system fru log";;
     "system fru show"   ) system_fru_show ;;
     "system fru show "* ) system_fru_show ;;
     "system fru "* ) help "system fru" ;;
