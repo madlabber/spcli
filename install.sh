@@ -8,8 +8,11 @@ dnf install -y perl-XML-XPath mtools net-tools expect lm_sensors
 echo "SPCLI Installer: Copying Files"
 mkdir -p /opt/spcli/log
 if [ "$(which spcli 2>/dev/null)" != "" ];then rm "$(which spcli)";fi
+if [ "$(which console_logger 2>/dev/null)" != "" ];then rm "$(which console_logger)";fi
 cp spcli /opt/spcli/spcli 2>/dev/null
+cp console_logger /opt/spcli/console_logger 2>/dev/null
 ln -s /opt/spcli/spcli /usr/sbin/spcli 
+ln -s /opt/spcli/console_logger /usr/sbin/console_logger
 touch /opt/spcli/log/history
 touch /opt/spcli/log/system_console
 
@@ -18,6 +21,8 @@ echo "SPCLI Installer: Setting permissions"
 groupadd --system libvirt 2>/dev/null
 usermod -aG libvirt $USER
 chown -R :libvirt /opt/spcli
+chmod +x /opt/spcli/spcli
+chmod +x /opt/spcli/console_logger
 chmod g+rws /opt/spcli/
 chmod g+rws /opt/spcli/log
 chmod g+rw /opt/spcli/log/history

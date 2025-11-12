@@ -1,0 +1,3 @@
+#!/bin/bash
+
+if [[ $2 == "started" ]]; then echo "sleep 2;/opt/spcli/spcli exit" | at now ;fi

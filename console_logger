@@ -1,0 +1,18 @@
+#!/bin/bash
+
+log_file="$1" #/opt/spcli/log/system_console
+
+# On virtual platforms this is the first message emitted in pre-boot
+awk '/Loading kernel.../ { print "================ Log #1 start time " strftime("%Y-%m-%d %H:%M:%S") " \n" $0; next } { print $0; fflush(stdout) }' | \
+# On virtual platforms this is the last message emitted in pre-boot
+awk '/---<<BOOT>>---/ { print $0 \
+                        "================ Log #1 end time " strftime("%Y-%m-%d %H:%M:%S") " \n\n"  \
+                        "================ Log #2 start time " strftime("%Y-%m-%d %H:%M:%S") " \n"; \
+                        next } { print $0; fflush(stdout) }' | \
+# This message is emitted by expect
+sed -u '/spawn virsh/d' | \
+# These messages are emitted by 'virsh console'
+sed -u '/Connected to domain/d' | \
+sed -u '/Escape character is/d' | \
+sed -u '/Active console session exists for this domain/d' | \
+sed -u '/stream had I\/O failure/d' >> "$log_file"

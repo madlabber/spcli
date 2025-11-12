@@ -4,9 +4,10 @@
 ####################
 
 function init () {
-  spcli_version="0.05"
+  spcli_version="0.07"
 
   priv_mode="admin"
+  console_logger=/opt/spcli/console_logger
   system_console_log=/opt/spcli/log/system_console
 
   # enable history
@@ -246,15 +247,20 @@ function events_search () {
 }
 
 function log_system_console () {
+  # opportunistically prune older records
+  if [ "$(lsof $system_console_log)" == "" ] && [ "$(grep '==== Log #1 start' $system_console_log)" != "" ];then
+    
+    last_start=$(awk '/==== Log #1 start/ { last_match_nr = NR } END { print last_match_nr }' $system_console_log)
+    last_start=$(( $last_start -1 ))
+    if [ "$last_start" -gt 1 ];then
+      head -n "$last_start" "$system_console_log" >> "$system_console_log.1"
+      sed -i "1,${last_start}d" "$system_console_log"
+    fi
+  fi 
 
-  #trim noise from log
-  sed -i '/spawn virsh/d' $system_console_log 
-  sed -i '/Connected to domain/d' $system_console_log 
-  sed -i '/Escape character is/d' $system_console_log 
-  sed -i '/stream had I\/O failure/d' $system_console_log 
-
-  # use expect so we can background this process
-  expect -c "set timeout -1; spawn virsh --connect qemu:///system console $domain --force; expect eof" >> $system_console_log &
+  # start background logging process
+  expect -c "set timeout -1; spawn virsh --connect qemu:///system console $domain; expect eof" | \
+    tee /dev/null | "$console_logger" "$system_console_log" &
   disown
 
 }
@@ -645,6 +651,13 @@ function host_software_setup () {
   # Restart the SSH service to apply changes
   systemctl restart sshd
 
+  # install console logger hook
+  if [ "$(ls /etc/libvirt/hooks/qemu)" == "" ]; then 
+    cp /opt/spcli/qemu /etc/libvirt/hooks/qemu
+    chmod +x /etc/libvirt/hooks/qemu
+    systemctl restart libvirtd
+  fi
+
 }
 
 function host_storage_setup () {
@@ -806,7 +819,8 @@ function sp_status () {
 function system_console () {
   if ! is_controller_installed;then return 0;fi
   if is_power_on; then
-    virsh --connect qemu:///system -e ^D console "$domain" --force | tee -a $system_console_log
+    #virsh --connect qemu:///system -e ^D console "$domain" --force | tee -a $system_console_log
+    virsh --connect qemu:///system -e ^D console "$domain" --force | tee /dev/tty | "$console_logger" "$system_console_log"
     log_system_console
   fi
 }
@@ -919,19 +933,23 @@ function system_log_all () {
 }
 
 function system_log_1 () {
-      echo "==================== Log #1 start"
-      awk '/Loading kernel.../{f=1;s=""}f{s=s$0"\n"}END{printf "%s",s}' $system_console_log | awk '/---<<BOOT>>---/{exit} {print}'
-      echo "==================== Log #1 end"
+      # echo "==================== Log #1 start"
+      # awk '/Loading kernel.../{f=1;s=""}f{s=s$0"\n"}END{printf "%s",s}' $system_console_log | awk '/---<<BOOT>>---/{exit} {print}'
+      # echo "==================== Log #1 end"
+      awk '/Log #1 start/{f=1;s=""}f{s=s$0"\n"}END{printf "%s",s}' $system_console_log | \
+        awk '/Log #1 end/{print; exit} {print}'
 }
 
 function system_log_2 () {
-  echo "==================== Log #2 start"
-  if [ "$(grep '\-\-\-<<BOOT>>---' $system_console_log)" == "" ];then 
+  log_mtime=$(date -r $system_console_log  +'%F %T')
+  #if [ "$(grep '\-\-\-<<BOOT>>---' $system_console_log)" == "" ];then 
+  if [ "$(grep 'Log #1 end' $system_console_log)" == "" ];then 
+    echo "==================== Log #2 start"
     cat $system_console_log;
   else
-    awk '/---<<BOOT>>---/{f=1;s=""}f{s=s$0"\n"}END{printf "%s",s}' $system_console_log
+    awk '/Log #2 start/{f=1;s=""}f{s=s$0"\n"}END{printf "%s",s}' $system_console_log 
   fi 
-  echo "==================== Log #2 end"
+  echo "==================== Log #2 end time $log_mtime"
 }
 
 function system_power_cycle () {
@@ -1044,17 +1062,26 @@ function usage () {
     "events oldest"*           ) echo "usage: events oldest <number>" ;;
     "events search"*           ) echo "usage: events search <string>" ;;
     "help"*                    ) echo "usage: help [<command>]" ;;
-    "sp status"*               ) echo "usage: sp status [-v] [-d]";;
+    "sp status"*               ) echo "usage: sp status [-v | -d]"
+                                 echo 
+                                 echo "        -v	print verbose statistics"
+                                 echo "        -d	print SP debug information";;
     "sp uptime"*               ) echo "usage: sp uptime" ;;
     "system acp sensors show"* ) echo "usage: system acp sensors show" ;;
     "system battery show"*     ) echo "usage: system battery show" ;;
+    "system cpld version"*     ) echo "usage: system cpld version" ;;
     "system fru list"*         ) echo "usage: system fru list" ;;
     "system fru show"*         ) echo "usage: system fru show <FRU-ID>" ;;
     "system power on"*         ) echo "usage: system power on" ;;
     "system power status"*     ) echo "usage: system power status" ;;
     "system setenv"*           ) echo "usage: system setenv <key>=<value>" ;;
+    "system sensors get"*      ) echo "usage: system sensors get <sensor name>" ;;
+    "system sensors show"*     ) echo "usage: system sensors show" ;;
     "system unsetenv"*         ) echo "usage: system unsetenv <key>" ;;
     "system log"*              ) echo "usage: system log [-a] [-p <page_size>] [-l <log_number>]" ;;
+    "system watchdog monitor"* ) echo "usage: system watchdog monitor" ;;
+    "system watchdog status"*  ) echo "usage: system watchdog status" ;;
+    "system watchdog reset"*   ) echo "usage: system watchdog reset" ;;
     "version"*                 ) echo "usage: version" ;;
   esac
 }
@@ -1096,6 +1123,8 @@ function help (){
     system battery show - display battery info status
     system console - connect to the system console
     system core - dump the system core and reset
+    system cpld - cpld commands
+    system cpld version - view cpld revisions
     system fru - fru related commands
     system fru show - display fru id inventory data
     system fru list - list fru id
@@ -1108,6 +1137,7 @@ function help (){
     system power status - print system power status
     system sensors - print system sensors
     system sensors show - print system sensors
+    system sensors get - print the specified sensor status
     system reset - reset the system using the selected firmware
     system reset backup - reset the system using the backup firmware
     system reset current - reset the system using the current firmware
@@ -1119,6 +1149,8 @@ function help (){
     system forensics log clear - clear system forensics log
     system watchdog - system watchdog commands
     system watchdog status - Display the system watchdog status
+    system watchdog monitor - Monitors the system watchdog
+    system watchdog reset - Pets the system watchdog
     version - print Service Processor version
     "
   
@@ -1251,6 +1283,10 @@ function run_command () {
     "system console "* ) system_console ;;
     "system core"   ) system_core ;;
     "system core "* ) system_core ;;
+    "system cpld"           ) ;;
+    "system cpld version"   ) ;;
+    "system cpld version "* ) usage ;;
+    "system cpld "*         ) help "system cpld" ;;
     "system fru"   ) help "system fru" ;;
     "system fru list"   ) system_fru_list ;;
     "system fru list "* ) usage ;;
@@ -1292,8 +1328,10 @@ function run_command () {
     "system reset"           ) system_reset ;;
     "system reset "*         ) help "system reset" ;;
     "system sensors"        ) sensors ;;
+    "system sensors get"    ) usage ;;
+    "system sensors get "*  ) ;;
     "system sensors show"   ) sensors ;;
-    "system sensors show "* ) sensors ;;
+    "system sensors show "* ) usage ;;
     "system sensors "*      ) help "system sensors" ;;
     "system forensics"             ) help "system forensics" ;;
     "system forensics show"        ) echo "Forensics enabled: false"; echo;;
@@ -1307,6 +1345,11 @@ function run_command () {
     "system forensics "*           ) help "system forensics" ;;
     "system watchdog"   ) help ;;
     "system watchdog status" ) virsh --connect qemu:///system dumpxml "$domain" | grep watchdog ;;
+    "system watchdog status "* ) usage ;;
+    "system watchdog monitor" ) ;;
+    "system watchdog monitor "* ) usage ;;
+    "system watchdog reset"  ) echo "The system watchdog has been reset";;
+    "system watchdog reset "*  ) usage ;;
     "system watchdog "* ) help "system watchdog" ;;
     "system "* ) help "system";;
     "version"   ) echo "SP CLI for ONTAP Select version: $spcli_version"
