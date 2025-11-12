@@ -652,7 +652,8 @@ function host_software_setup () {
   systemctl restart sshd
 
   # install console logger hook
-  if [ "$(ls /etc/libvirt/hooks/qemu)" == "" ]; then 
+  if [ "$(ls /etc/libvirt/hooks/qemu 2>/dev/null)" == "" ]; then 
+    mkdir -p /etc/libvirt/hooks
     cp /opt/spcli/qemu /etc/libvirt/hooks/qemu
     chmod +x /etc/libvirt/hooks/qemu
     systemctl restart libvirtd
