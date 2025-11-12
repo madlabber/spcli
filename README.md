@@ -4,11 +4,12 @@ A Service-Processor-like CLI for ONTAP Select on KVM
 ### About
 SPCLI implements much of the Service Processor Command Line Interface for an ONTAP Select kvm host.  SPCLI can be run as a command or as an interactive shell.  SPCLI can also be used to prepare a linux host for an ONTAP Select deployment.  
 
+### Background
 On a hardware storage appliance the service processor provides out-of-band management of the storage controller.  This script maps established service processor commands to their linux / virsh equivilents to provide a similar out of band management experience for ONTAP Select running on a linux host.
 
 ### Installation
 
-    sudo git clone https://github.com/madlabber/spcli.git
+    sudo git clone https://github.com/madlabber/spcli.git /opt/spcli
     sudo /opt/spcli/install.sh 
 
 ### Basic usage
