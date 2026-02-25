@@ -2,7 +2,7 @@
 
 # tools
 echo "SPCLI Installer: Installing dependencies"
-dnf install -y perl-XML-XPath mtools net-tools expect lm_sensors
+dnf install -y perl-XML-XPath mtools net-tools expect lm_sensors bc
 
 # files
 echo "SPCLI Installer: Copying Files"
