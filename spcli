@@ -683,8 +683,10 @@ function host_network_setup (){
             nmcli -t -f UUID,NAME,TYPE connection show | awk -F: '$2 ~ /^ovs-/ || $3 ~ /^ovs-/ {print $1}' | xargs -r nmcli connection delete
 
             # stop and remove any existing ovs-ip service
-            systemctl stop ovs-ip.service
-            rm "/etc/systemd/system/ovs-ip.service"
+            if [ -f "/etc/systemd/system/ovs-ip.service" ]; then
+              systemctl stop ovs-ip.service
+              rm "/etc/systemd/system/ovs-ip.service"
+            fi
 
             # create the ovs bridge
             echo "Creating bridge $bridge"
@@ -705,6 +707,7 @@ function host_network_setup (){
             for eth in $bond_interfaces; do 
               conn_name=$(nmcli -t -f DEVICE,TYPE,CONNECTION d | grep "$eth:ethernet" | cut -d: -f3)
               if [ "$conn_name" != "" ];then nmcli conn delete "$conn_name";fi
+              nmcli conn delete "$eth" 2>/dev/null
             done
 
             # Add port or bond
