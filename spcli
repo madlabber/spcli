@@ -779,10 +779,10 @@ function host_network_setup (){
 function host_network_show () {
   get_host_mgmt_network
 
-  bridge=$(nmcli -t -f TYPE,DEVICE,CONNECTION d | grep ^ovs-bridge | cut -d: -f3)
-  bond=$(nmcli -t -f TYPE,DEVICE,CONNECTION d | grep ^ovs-port | grep -v "$bridge" | cut -d: -f3)
-  bond_mode=$(nmcli -t conn show "$bond" | grep bond-mode | cut -d: -f2)
-  bond_interfaces=$(nmcli -t -f DEVICE,TYPE,CONNECTION d | grep ethernet | grep slave |cut -d: -f1 | tr '\n' ' ')
+  bridge=$(ovs-vsctl show | grep Bridge |tr -s ' ' |cut -d ' ' -f3)
+  bond=$(ovs-appctl bond/list | grep -v recircID | head -n1 | cut -f1)
+  bond_mode=$(ovs-appctl bond/list | grep -v recircID | head -n1 | cut -f2)
+  bond_interfaces=$(ovs-appctl bond/list | grep -v recircID | head -n1 | cut -f4)
 
   echo
   echo "Network Configuration:"
