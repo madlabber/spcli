@@ -697,10 +697,6 @@ function host_network_setup (){
               # tear down old interface
               conn_name=$(nmcli -t -f DEVICE,TYPE,CONNECTION d | grep "$eth_interface:ethernet" | cut -d: -f3)
               if [ "$conn_name" != "" ];then nmcli conn delete "$conn_name";fi
-
-              # tear down new interface
-              conn_name=$(nmcli -t -f DEVICE,TYPE,CONNECTION d | grep "$ip_interface:ethernet" | cut -d: -f3)
-              if [ "$conn_name" != "" ];then nmcli conn delete "$conn_name";fi
             fi
 
             #remove any nmcli profiles for the bond interfaces
@@ -748,8 +744,12 @@ function host_network_setup (){
             sudo systemctl enable --now ovs-ip.service
             fi
 
-            # if we tore it down to move it, rebuild it now
-            if [ "$eth_interface" != "$ip_interface" ]; then
+            # if the IP is not being assigned to the bridge, rebuild the interface
+            if [ "$ip_interface" != "$bridge" ]; then
+              # tear down new interface
+              conn_name=$(nmcli -t -f DEVICE,TYPE,CONNECTION d | grep "$ip_interface:ethernet" | cut -d: -f3)
+              if [ "$conn_name" != "" ];then nmcli conn delete "$conn_name";fi
+              
               nmcli conn add type ethernet conn.interface "$ip_interface" con-name "$ip_interface" \
                 ipv4.method manual \
                 ipv4.address "$ip_address/$ip_cidr" \
