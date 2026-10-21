@@ -675,15 +675,16 @@ function host_network_setup (){
             systemctl restart NetworkManager 
 
             # remove existing OVS config is ovs-vsctl
-            for port in $(ovs-vsctl list port | awk '/name/ {print $3}' | tr -d '"'); do
-              ovs-vsctl del-port "$port" 2>/dev/null
-            done
             for br in $(ovs-vsctl list-br 2>/dev/null); do
               ovs-vsctl del-br "$br"
             done
 
             # remove existing OVS config in nmcli
             nmcli -t -f UUID,NAME,TYPE connection show | awk -F: '$2 ~ /^ovs-/ || $3 ~ /^ovs-/ {print $1}' | xargs -r nmcli connection delete
+
+            # stop and remove any existing ovs-ip service
+            systemctl stop ovs-ip.service
+            rm "/etc/systemd/system/ovs-ip.service"
 
             # create the ovs bridge
             echo "Creating bridge $bridge"
@@ -718,13 +719,30 @@ function host_network_setup (){
 
             echo "Setting IP on $ip_interface"
             if [ "$ip_interface" == "$bridge" ];then 
-              nmcli conn modify "$bridge_interface" \
-                ipv4.method manual \
-                ipv4.address "$ip_address/$ip_cidr" \
-                ipv4.gateway "$ip_gateway" \
-                ipv4.dns "$ip_dns1" \
-                autoconnect yes \
-                ipv6.addr-gen-mode 0 
+              # Create a oneshot service to IP the bridge
+
+            service="/etc/systemd/system/ovs-ip.service"
+            touch $service
+            echo "[Unit]" > $service
+            echo "Description=Persistent IP configuration for native OVS Bridge $bridge" >> $service
+            echo "After=openvswitch.service NetworkManager.service" >> $service
+            echo "Requires=openvswitch.service" >> $service
+            echo "" >> $service
+            echo "[Service]" >> $service
+            echo "Type=oneshot" >> $service
+            echo "RemainAfterExit=yes" >> $service
+            echo "ExecStart=/usr/sbin/ip address add $ip_address/$ip_cidr dev $bridge" >> $service
+            echo "ExecStart=/usr/sbin/ip link set $bridge up" >> $service
+            echo "ExecStart=/usr/sbin/ip route add default via $ip_gateway dev $bridge" >> $service
+            echo "ExecStart=/usr/bin/sh -c 'grep -q \"nameserver $ip_dns\" /etc/resolv.conf || echo \"nameserver $ip_dns\" >> /etc/resolv.conf'" >> "$service"
+            echo "ExecStop=/usr/sbin/ip route del default via $ip_gateway dev $bridge" >> "$service"
+            echo "ExecStop=/usr/sbin/ip address del $ip_address/$ip_cidr dev $bridge" >> $service
+            echo "" >> $service
+            echo "[Install]" >> $service
+            echo "WantedBy=multi-user.target" >> $service
+
+            sudo systemctl daemon-reload
+            sudo systemctl enable --now ovs-ip.service
             fi
 
             # if we tore it down to move it, rebuild it now
