@@ -708,12 +708,12 @@ function host_network_setup (){
 
             # Add port or bond
             ifcount=$(wc -w <<< "$bond_interfaces")
-            if [ ifcount > 1 ];then
+            if [ "$ifcount" -gt 1 ];then
             lacp_mode=""
               if [ "$bond_mode" = "balance-tcp" ]; then lacp_mode="lacp=active";fi
-              ovs-vsctl add-bond "$bridge" "$bond" "$bond_interfaces" bond_mode="$bond_mode" "$lacp_mode"
+              ovs-vsctl add-bond $bridge $bond $bond_interfaces bond_mode=$bond_mode $lacp_mode
             else
-              ovs-vsctl add-port "bridge" "$bond_interfaces"
+              ovs-vsctl add-port $bridge $bond_interfaces
             fi
 
             echo "Setting IP on $ip_interface"
