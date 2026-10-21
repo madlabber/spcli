@@ -589,6 +589,8 @@ function host_software_setup () {
     case "$choice" in
       y|Y )
             dnf install -y qemu-kvm libvirt virt-install lshw lsscsi lsof telnet libibverbs fence-agents-all
+            # This fixes a potential version mismatch between these two packages:
+            dnf update -y openssh-server openssl
             # Also listed as required in the docs but not really required
             #   pacemaker-2.1.4-5
             #   pcs-0.10.14-5
