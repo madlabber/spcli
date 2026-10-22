@@ -960,9 +960,14 @@ function host_storage_setup () {
     virsh pool-autostart "$pool_name"
 
     # create an empty volume to prevent the storage pool from stopping
-    if [ "$(virsh vol-list --pool select_pool | grep keepalive)" == "" ];then 
+    if [ "$(virsh vol-list --pool $pool_name | grep keepalive)" == "" ];then 
       virsh vol-create-as --pool "$pool_name" --name keepalive --capacity 1g
     fi
+
+    # linux randomizes device names at boot to prevent reliable operations.  So we'll mitigate that with this hack:
+    virsh pool-dumpxml "$pool_name" > /tmp/pool.xml
+    sed -i '/<device path=/d' /tmp/pool.xml
+    virsh pool-define /tmp/pool.xml
 
   fi 
 
